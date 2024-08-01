@@ -26,7 +26,8 @@ enum SyncDir
 {
     BothWays,
     SrcToDst,
-    DstToSrc
+    DstToSrc,
+    ToBeDeleted
 };
 
 class PairData
@@ -121,6 +122,21 @@ typedef std::vector<PairData> PairVector;
  */
 class CPairs : public PairVector
 {
+private:
+    // Disable all vector modifier methods except push_back(),
+    // erase() and emplace_back() since we need to keep
+    // index to each PairData to remain constant.
+    iterator erase(iterator)                        = delete;
+    iterator erase(iterator, iterator )             = delete;
+    iterator insert(iterator, CPairs&)              = delete;
+    void     insert(iterator, size_t, CPairs&)      = delete;
+    void     insert(iterator, iterator, iterator)   = delete;
+    iterator emplace(const_iterator, CPairs&&)      = delete;
+    void     swap(CPairs&)                          = delete;
+    void     pop_back()                             = delete;
+    void     assign(iterator, iterator)             = delete;
+    void     assign(size_type, const_iterator, CPairs&) = delete;
+
 public:
     CPairs();
     ~CPairs();
