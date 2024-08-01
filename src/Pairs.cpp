@@ -91,6 +91,8 @@ CPairs::~CPairs()
 
 void CPairs::InitPairList()
 {
+    bool bDoSave = false;
+    assert(this->size() == 0);
     clear();
     int p = 0;
     for (;;)
@@ -178,17 +180,28 @@ void CPairs::InitPairList()
         pd.m_enabled = !!static_cast<DWORD>(enabledReg);
 
         if (std::find(cbegin(), cend(), pd) == cend())
-            push_back(pd);
+        {
+            if (pd.m_syncDir != ToBeDeleted)
+                push_back(pd);
+            else
+                bDoSave = true;
+        }
         ++p;
     }
+    if (bDoSave)
+        SavePairs();
+
 }
 
 void CPairs::SavePairs()
 {
     int p = 0;
-    for (auto it = cbegin(); (it != cend()) && (p < 200); ++it)
+    for (auto it = begin(); (it != end()) && (p < 200); ++it)
     {
         WCHAR key[MAX_PATH];
+
+        if (it->m_syncDir == ToBeDeleted) // Will be deleted from registy on next run
+            it->m_enabled = false;
         swprintf_s(key, L"Software\\CryptSync\\SyncPairOrig%d", p);
         // ReSharper disable CppEntityAssignedButNoRead
         CRegStdString origPathReg(key, L"", true);

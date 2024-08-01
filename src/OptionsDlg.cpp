@@ -34,6 +34,7 @@
 #include <string>
 #include <algorithm>
 #include <Commdlg.h>
+#include <cassert>
 
 COptionsDlg::COptionsDlg(HWND hParent, CFolderSync& folderSync)
     : m_hParent(hParent)
@@ -177,7 +178,18 @@ void COptionsDlg::DoPairEdit(int iItem)
                 }
                 else
                 {
-                    MessageBox(*this, L"A pair with same paths already exists. Edits ignored.", L"CryptSync", MB_OK | MB_ICONERROR);
+                    // found another pair (ie, user changed paths)
+                    if (foundIt->m_syncDir == ToBeDeleted)
+                    { // Pair is empty, re-use it.
+                        t.m_syncDir = ToBeDeleted;
+                        *foundIt    = pd;
+                    }
+                    else
+                    {
+                        // User edited paths and new paths
+                        // are same as another enabled pair. Ignore edits.
+                        MessageBox(*this, L"A pair with same paths already exists. Edits ignored.", L"CryptSync", MB_OK | MB_ICONERROR);
+                    }
                 }
             }
             else
@@ -185,8 +197,7 @@ void COptionsDlg::DoPairEdit(int iItem)
                 // pd is for new paths, PairData that got edited will be disabled and
                 // new pair created.
                 MessageBox(*this, L"A new pair will be created with specified paths, replacing the pair you edited.", L"CryptSync", MB_OK | MB_ICONWARNING);
-                g_pairs.erase(g_pairs.begin() + lv.lParam);     // .erase must be done before .push_back to ensure lParam is valid.
-                // t.m_enabled = false; // Disable instead of deletion is another option.
+                t.m_enabled = false;
                 g_pairs.push_back(pd); // Edition resulted in new pd
             }
             InitPairList();
@@ -319,10 +330,10 @@ LRESULT COptionsDlg::DoCommand(int id)
 
             for (auto it = sels.cbegin(); it != sels.cend(); ++it)
             {
-                auto foundIt = std::find(g_pairs.cbegin(), g_pairs.cend(), *it);
+                auto foundIt = std::find(g_pairs.begin(), g_pairs.end(), *it);
                 if (foundIt != g_pairs.end())
                 {
-                    g_pairs.erase(foundIt);
+                    foundIt->m_syncDir = ToBeDeleted;
                 }
             }
             InitPairList();
@@ -411,6 +422,11 @@ void COptionsDlg::InitPairList()
 
     for (auto it = g_pairs.begin(); it != g_pairs.end(); ++it)
     {
+        if (it->m_syncDir == ToBeDeleted)
+        {
+            it->m_enabled = false;
+            continue;
+        }
         std::wstring origPath  = it->m_origPath;
         std::wstring cryptPath = it->m_cryptPath;
         LVITEM       lv        = {0};
