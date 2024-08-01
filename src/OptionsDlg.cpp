@@ -197,6 +197,7 @@ void COptionsDlg::DoPairEdit(int iItem)
                 // pd is for new paths, PairData that got edited will be disabled and
                 // new pair created.
                 MessageBox(*this, L"A new pair will be created with specified paths, replacing the pair you edited.", L"CryptSync", MB_OK | MB_ICONWARNING);
+                t.m_syncDir = ToBeDeleted;
                 t.m_enabled = false;
                 g_pairs.push_back(pd); // Edition resulted in new pd
             }
@@ -263,9 +264,13 @@ LRESULT COptionsDlg::DoCommand(int id)
                     auto pd       = PairData(true, dlg.m_origPath, dlg.m_cryptPath, dlg.m_password, dlg.m_cryptOnly, dlg.m_copyOnly, dlg.m_noSync, dlg.m_compressSize, dlg.m_encNames, dlg.m_encNamesNew, dlg.m_syncDir, dlg.m_7ZExt, dlg.m_useGpg, dlg.m_fat, dlg.m_syncDeleted, dlg.m_ResetOriginalArchAttr);
                     // Ignore new pd if it is on same paths as another pair
                     auto foundIt = std::find(g_pairs.begin(), g_pairs.end(), pd);
-                    if (foundIt == g_pairs.end())
+                    if (foundIt == g_pairs.end() || foundIt->m_syncDir == ToBeDeleted)
                     {
-                        g_pairs.push_back(pd);
+                        // Append new PairData to g_pairs
+                        if (foundIt == g_pairs.end())
+                            g_pairs.push_back(pd);
+                        else // Re-use "ToBeDeleted" PairData, otherwise ignore new item
+                            *foundIt = pd;
                         InitPairList();
                         g_pairs.SavePairs();
                     }
