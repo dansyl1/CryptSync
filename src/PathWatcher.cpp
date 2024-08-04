@@ -60,7 +60,7 @@ CPathWatcher::CPathWatcher()
 CPathWatcher::~CPathWatcher()
 {
     Stop();
-    CAutoWriteLock locker(m_guard);
+    // ClearInfoMap() should already have been done by thread...
     ClearInfoMap();
 }
 
@@ -69,8 +69,13 @@ void CPathWatcher::Stop()
     InterlockedExchange(&m_bRunning, FALSE);
     if (m_hCompPort)
     {
-        PostQueuedCompletionStatus(m_hCompPort, 0, NULL, nullptr);
-        m_hCompPort.CloseHandle();
+        if (PostQueuedCompletionStatus(m_hCompPort, STOPPING, NULL, nullptr) == 0)
+        {
+            _com_error comError(::GetLastError());
+            LPCTSTR    comErrorText = comError.ErrorMessage();
+            CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": PostQueuedCompletionStatus STOPPING failed (%s)\n"), comErrorText);
+        }
+        // m_hCompPort.CloseHandle(); // Commented, will be done in thread when it calls ClearInfoMap()
     }
 
     if (m_hThread)
@@ -89,17 +94,42 @@ bool CPathWatcher::RemovePath(const std::wstring& path)
 
     CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": RemovePath for %s\n"), path.c_str());
     bool bRet = (watchedPaths.erase(CPathUtils::AdjustForMaxPath(path)) != 0);
-    m_hCompPort.CloseHandle();
+    // m_hCompPort.CloseHandle(); // Commented as this may stop notifications for all pairs, risking missing file deletes and other changes
     return bRet;
 }
 
-bool CPathWatcher::AddPath(const std::wstring& path)
+bool CPathWatcher::AddPath(const std::wstring& path, long long id)
 {
     CAutoWriteLock locker(m_guard);
-    CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": AddPath for %s\n"), path.c_str());
-    watchedPaths.insert(CPathUtils::AdjustForMaxPath(path));
-    m_hCompPort.CloseHandle();
-    return true;
+    auto insertResult = watchedPaths.insert({ CPathUtils::AdjustForMaxPath(path), id});
+#ifdef _DEBUG
+    if (insertResult.second)
+    {
+        CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": AddPath for %s\n"), path.c_str());
+    }
+    else
+    {
+        if (insertResult.first->second != id)
+        {
+            CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": AddPath same path %s used in id %d and %d\n"), path.c_str(), insertResult.first->second, id);
+        }
+    }
+#endif
+    // m_hCompPort.CloseHandle(); // Commented as this may stop notifications for all pairs, risking missing file deletes and other changes
+    return insertResult.second;
+}
+
+void CPathWatcher::CommitPathChanges()
+{
+    if (m_hCompPort)
+    {
+        if (PostQueuedCompletionStatus(m_hCompPort, ALLOC_PDI, NULL, nullptr) == 0)
+        {
+            _com_error comError(::GetLastError());
+            LPCTSTR    comErrorText = comError.ErrorMessage();
+            CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": PostQueuedCompletionStatus ALLOC_PDI failed (%s)\n"), comErrorText);
+        }
+    }
 }
 
 unsigned int CPathWatcher::ThreadEntry(void* pContext)
@@ -114,11 +144,29 @@ void CPathWatcher::WorkerThread()
     DWORD          numBytes;
     CDirWatchInfo* pdi = nullptr;
     LPOVERLAPPED   lpOverlapped;
+    bool           bCheckHandles = false;
     while (m_bRunning)
     {
+        if (VerifywatchInfoMap())
+        {
+            // Not watching anything
+            ClearInfoMap();
+        }
+
+        // Note that watchedPaths may become empty as we remove
+        // some path during error handling. Periodically, TrayWindow
+        // will add back the paths it wants to be monitored, in hope
+        // they will eventually be (the error situation somehow
+        // got resolved).
         if (!watchedPaths.empty())
         {
-            if (!m_hCompPort || !GetQueuedCompletionStatus(m_hCompPort,
+            // Initalise various variables we expect GetQueuedCompletionStatus()
+            // to change in case bCheckHandles == true
+            SetLastError(ERROR_SUCCESS);
+            numBytes = 0;
+            pdi      = nullptr;
+            lpOverlapped = nullptr;
+            if (bCheckHandles == true || !m_hCompPort || !GetQueuedCompletionStatus(m_hCompPort,
                                                            &numBytes,
                                                            reinterpret_cast<PULONG_PTR>(&pdi),
                                                            &lpOverlapped,
@@ -131,77 +179,171 @@ void CPathWatcher::WorkerThread()
 
                 lasterr = GetLastError();
 
-                {
-                    CAutoWriteLock locker(m_guard);
-                    ClearInfoMap();
-                }
 #ifdef _DEBUG
-                if (m_hCompPort)
+                if (m_hCompPort && !bCheckHandles)
                 {
                     _com_error comError(lasterr);
                     LPCTSTR    comErrorText = comError.ErrorMessage();
-                    CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": GetQueuedCompletionStatus (%s) \n"), comErrorText);
+                    CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": GetQueuedCompletionStatus failed (%s) on directory %s\n"), comErrorText, pdi->m_dirName.c_str());
                 }
 #endif
-                if ((m_hCompPort) && (lasterr != ERROR_SUCCESS) && (lasterr != ERROR_INVALID_HANDLE))
+                // ERROR_INVALID_HANDLE returned on closing/closed handle 
+                // ERROR_OPERATION_ABORTED when CancelIo() is done
+                if ((m_hCompPort) && (lasterr != ERROR_SUCCESS) && (lasterr != ERROR_INVALID_HANDLE) && (lasterr != ERROR_OPERATION_ABORTED))
                 {
-                    m_hCompPort.CloseHandle();
+                    // Close all reference dir handles and m_hCompPort.
+                    // They will be re-created below.
+                    ClearInfoMap();
                 }
                 CAutoReadLock locker(m_guard);
-                for (auto p = watchedPaths.cbegin(); p != watchedPaths.cend(); ++p)
+                for (auto p = watchedPaths.cbegin(); p != watchedPaths.cend();)
                 {
-                    CAutoFile hDir = CreateFile(p->c_str(),
-                                                FILE_LIST_DIRECTORY,
-                                                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                                                nullptr, // security attributes
-                                                OPEN_EXISTING,
-                                                FILE_FLAG_BACKUP_SEMANTICS | // required privileges: SE_BACKUP_NAME and SE_RESTORE_NAME.
-                                                    FILE_FLAG_OVERLAPPED,
-                                                nullptr);
-                    if (!hDir)
+                    bool           bCreateIoCompletionPort = FALSE;
+                    auto           pDirInfoIter            = m_watchInfoMap.find(p->first);
+                    CDirWatchInfo* pDirInfo                = nullptr;
+                    if (pDirInfoIter != m_watchInfoMap.end())
                     {
-                        // this could happen if a watched folder has been removed/renamed
-                        m_hCompPort.CloseHandle();
+                        pDirInfo = pDirInfoIter->second;
+                    }
+                    if (pDirInfo != nullptr)
+                    {
+                        if (pDirInfo->m_hDir.IsValid())
+                        {
+                            // Confirm directory handle is still valid for Windows
+                            BY_HANDLE_FILE_INFORMATION FileInformation;
+                            if (GetFileInformationByHandle(pDirInfo->m_hDir, &FileInformation) == 0)
+                            {
+#ifdef _DEBUG
+                                {
+                                    _com_error comError(GetLastError());
+                                    LPCTSTR    comErrorText = comError.ErrorMessage();
+                                    CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": GetFileInformationByHandle on %s directory failed (%s) \n"), p->first.c_str(), comErrorText);
+                                }
+#endif
+                                pDirInfo->CloseDirectoryHandle();
+                            }
+                        }
+                    }
+                    if (pDirInfo == nullptr || pDirInfo->m_hDir == INVALID_HANDLE_VALUE)
+                    {
+                        CAutoFile hDir = CreateFile(p->first.c_str(),
+                                                    FILE_LIST_DIRECTORY,
+                                                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                                    nullptr, // security attributes
+                                                    OPEN_EXISTING,
+                                                    FILE_FLAG_BACKUP_SEMANTICS | // required privileges: SE_BACKUP_NAME and SE_RESTORE_NAME.
+                                                        FILE_FLAG_OVERLAPPED,
+                                                    nullptr);
+                        if (!hDir)
+                        {
+#ifdef _DEBUG
+                            {
+                                _com_error comError(GetLastError());
+                                LPCTSTR    comErrorText = comError.ErrorMessage();
+                                CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": CreateFile on %s directory failed (%s) \n"), p->first.c_str(), comErrorText);
+                            }
+#endif
+                            // this could happen if a watched folder has been removed/renamed
+                            // m_hCompPort.CloseHandle();  m_hCompPort is still valid for the other dir handles
+                            CAutoWriteLock lockerW(m_guard);
+                            m_watchInfoMap.CloseDirHandle(p->first); // Should do nothing
+                            p = watchedPaths.erase(p);               // Get next p from erase() to avoid invalidating the iterator
+                            continue;
+                        }
+                        else
+                        {
+                            bCreateIoCompletionPort = TRUE;
+                        }
+                        if (pDirInfo == nullptr)
+                        {
+                            pDirInfo = new CDirWatchInfo(std::move(hDir), p->first);
+                            // auto upDirInfo = std::make_unique<CDirWatchInfo>(std::move(hDir), p->c_str());
+                            // pDirInfo       = upDirInfo.release();
+                        }
+                        else
+                        {
+                            pDirInfo->m_hDir = std::move(hDir);
+                        }
+                    } // pDirInfo == nullptr || pDirInfo->m_hDir == INVALID_HANDLE_VALUE
+
+                    {
                         CAutoWriteLock lockerW(m_guard);
-                        watchedPaths.erase(p);
-                        break;
+                        m_watchInfoMap[p->first] = pDirInfo;
                     }
 
-                    auto pDirInfo = std::make_unique<CDirWatchInfo>(std::move(hDir), p->c_str());
-                    m_hCompPort   = CreateIoCompletionPort(pDirInfo->m_hDir, m_hCompPort, reinterpret_cast<ULONG_PTR>(pDirInfo.get()), 0);
-                    if (m_hCompPort == NULL)
+                    if (bCreateIoCompletionPort)
                     {
-                        CAutoWriteLock lockerW(m_guard);
-                        ClearInfoMap();
-                        watchedPaths.erase(p);
-                        break;
+                        m_hCompPort = CreateIoCompletionPort(pDirInfo->m_hDir, m_hCompPort, reinterpret_cast<ULONG_PTR>(pDirInfo), 0);
+                        if (m_hCompPort == NULL)
+                        {
+#ifdef _DEBUG
+                            {
+                                _com_error comError(GetLastError());
+                                LPCTSTR    comErrorText = comError.ErrorMessage();
+                                CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": CreateIoCompletionPort on %s directory failed (%s) \n"), p->first.c_str(), comErrorText);
+                            }
+#endif
+                            CAutoWriteLock lockerW(m_guard);
+                            // ClearInfoMap();
+                            m_watchInfoMap.CloseDirHandle(p->first.c_str());
+                            p = watchedPaths.erase(p); // Get next p from erase() to avoid invalidating the iterator
+                            continue;
+                        }
+                        SecureZeroMemory(pDirInfo->m_buffer, sizeof(pDirInfo->m_buffer));
+                        SecureZeroMemory(&pDirInfo->m_overlapped, sizeof(pDirInfo->m_overlapped));
+                        if (!ReadDirectoryChangesW(pDirInfo->m_hDir,
+                                                   pDirInfo->m_buffer,
+                                                   READ_DIR_CHANGE_BUFFER_SIZE,
+                                                   TRUE,
+                                                   FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE,
+                                                   &numBytes, // not used
+                                                   &pDirInfo->m_overlapped,
+                                                   nullptr)) // no completion routine!
+                        {
+#ifdef _DEBUG
+                            {
+                                _com_error comError(GetLastError());
+                                LPCTSTR    comErrorText = comError.ErrorMessage();
+                                CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": ReadDirectoryChangesW on %s directory failed (%s) \n"), p->first.c_str(), comErrorText);
+                            }
+#endif
+                            CAutoWriteLock lockerW(m_guard);
+                            m_watchInfoMap.CloseDirHandle(p->first.c_str());
+                            p = watchedPaths.erase(p); // Get next p from erase() to avoid invalidating the iterator
+                            continue;
+                        } // !ReadDirectoryChangesW()
+                        CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": watching path %s\n"), p->first.c_str());
                     }
-                    SecureZeroMemory(pDirInfo->m_buffer, sizeof(pDirInfo->m_buffer));
-                    SecureZeroMemory(&pDirInfo->m_overlapped, sizeof(pDirInfo->m_overlapped));
-                    if (!ReadDirectoryChangesW(pDirInfo->m_hDir,
-                                               pDirInfo->m_buffer,
-                                               READ_DIR_CHANGE_BUFFER_SIZE,
-                                               TRUE,
-                                               FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE,
-                                               &numBytes, // not used
-                                               &pDirInfo->m_overlapped,
-                                               nullptr)) // no completion routine!
-                    {
-                        CAutoWriteLock lockerW(m_guard);
-                        ClearInfoMap();
-                        watchedPaths.erase(p);
-                        break;
-                    }
-                    CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": watching path %s\n"), p->c_str());
-                    CAutoWriteLock lockerW(m_guard);
-                    m_watchInfoMap[pDirInfo->m_hDir] = pDirInfo.get();
-                    pDirInfo.release();
-                }
+                    p++;
+                } // for all watched paths
+                bCheckHandles = false;
             }
             else
             {
                 if (!m_bRunning)
                     return;
+                if (lpOverlapped == NULL)
+                {
+                    // Received a self-posted PostQueuedCompletionStatus() message
+                    switch (numBytes)
+                    {
+                        case STOPPING:
+                            // Should never reach here as m_bRunning is checked above
+                            assert(false);
+                            return;
+                        case FREE_PDI:
+                        {
+                            std::wstring* upDirName = reinterpret_cast<std::wstring*>(pdi);
+                            m_watchInfoMap.CloseDirHandle(upDirName->c_str());
+                            delete upDirName;
+                        }
+                            continue;
+                        case ALLOC_PDI:
+                            bCheckHandles = true;
+                            continue;
+                    }
+                    assert(false);
+                }
                 // NOTE: the longer this code takes to execute until ReadDirectoryChangesW
                 // is called again, the higher the chance that we miss some
                 // changes in the file system!
@@ -253,10 +395,13 @@ void CPathWatcher::WorkerThread()
 #ifdef _DEBUG
                         if (m_hCompPort)
                         {
-                            lasterr = GetLastError();
-                            _com_error comError(lasterr);
+                            _com_error comError(GetLastError());
                             LPCTSTR    comErrorText = comError.ErrorMessage();
                             CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": GetQueuedCompletionStatus returned zero numBytes (%s) for watched folder \"%s\"\n"), comErrorText, pdi->m_dirPath.c_str());
+                            if (!pdi->m_hDir.IsValid())
+                            {
+                                CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": GetQueuedCompletionStatus directory handle for \"%s\" closed\n"), pdi->m_dirPath.c_str());
+                            }
                         }
 #endif
                     }
@@ -280,29 +425,36 @@ void CPathWatcher::WorkerThread()
                         // wait a while. We don't want to have this thread
                         // running using 100% CPU if something goes completely
                         // wrong.
+#ifdef _DEBUG
+                        {
+                            _com_error comError(GetLastError());
+                            LPCTSTR    comErrorText = comError.ErrorMessage();
+                            CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": ReadDirectoryChangesW failed (%s) for watched folder \"%s\"\n"), comErrorText, pdi->m_dirPath.c_str());
+                        }
+#endif
+                        pdi->CloseDirectoryHandle();
+
                         Sleep(200);
-                    }
-                }
+                    } // !ReadDirectoryChangesW()
+                } // if (pdi)
             }
-        } // if (watchedPaths.GetCount())
+        } // if (!watchedPaths.empty())
         else
+        {
+            // watchedPaths.empty()
             Sleep(200);
+        }
     } // while (m_bRunning)
 }
 
 void CPathWatcher::ClearInfoMap()
 {
-    if (!m_watchInfoMap.empty())
+    CAutoWriteLock locker(m_guard);
+    m_watchInfoMap.clear();  // clear() method will delete the CDirWatchInfo
+    if (m_hCompPort)
     {
-        CAutoWriteLock locker(m_guard);
-        for (std::map<HANDLE, CDirWatchInfo*>::iterator I = m_watchInfoMap.begin(); I != m_watchInfoMap.end(); ++I)
-        {
-            CPathWatcher::CDirWatchInfo* info = I->second;
-            delete info;
-            info = nullptr;
-        }
+        CancelIo(m_hCompPort);
     }
-    m_watchInfoMap.clear();
     m_hCompPort.CloseHandle();
 }
 
@@ -314,11 +466,86 @@ std::set<std::wstring> CPathWatcher::GetChangedPaths()
     return ret;
 }
 
+bool CPathWatcher::VerifywatchInfoMap()
+{
+    CAutoReadLock locker(m_guard);
+    bool          bOkToClearInfoMap = false;
+
+    if (!m_watchInfoMap.empty())
+    {
+        CDirWatchInfo* pDirInfo = nullptr;
+        bOkToClearInfoMap       = true;
+
+        for (auto I = m_watchInfoMap.begin(); I != m_watchInfoMap.end(); I++)
+        {
+            pDirInfo = I->second;
+            if (pDirInfo != nullptr && pDirInfo->m_hDir.IsValid())
+            { // We have required information to allow watching this directory
+
+                if (watchedPaths.find(I->first.c_str()) == watchedPaths.end())
+                {
+                    // not a path we should be watching
+                    // Currently watching it, CloseDirectoryHandle will call CancelIo and trigger
+                    // GetQueuedCompletionStatus() to return if needed.
+                    pDirInfo->CloseDirectoryHandle();
+#if 0
+                    if (m_hCompPort)
+                    {
+                        // Currently watching it, CloseDirectoryHandle will call CancelIo and trigger 
+                        // GetQueuedCompletionStatus() to return 
+                        pDirInfo->CloseDirectoryHandle();
+                        //auto dirName = std::make_unique<std::wstring>(pDirInfo->m_dirName);
+                        //PostQueuedCompletionStatus(m_hCompPort, (DWORD)FREE_PDI, reinterpret_cast<ULONG_PTR>(dirName.release()), nullptr);
+                    }
+                    else
+                    {
+                        pDirInfo->CloseDirectoryHandle();
+                        //I = m_watchInfoMap.CloseDirHandle(I); // Similarly to .erase(), return next iterator
+                    }
+#endif
+                }
+                else
+                {
+                    // This is a directory we continue watching, InfoMap still needed
+                    bOkToClearInfoMap = false;
+                }
+            } // if (pDirInfo != nullptr && pDirInfo->m_hDir.IsValid())
+        }     // for
+    }         // not empty
+    return (bOkToClearInfoMap);
+#if 0
+    // Path that are to be watched but aren't are added back
+    // by Commit method
+    bool bAlloc_pdi_posted = false;
+    if (!watchedPaths.empty())
+    {
+        for (auto I = watchedPaths.begin(); I != watchedPaths.end(); I++)
+        {
+            if (m_watchInfoMap.find(I->c_str()) == m_watchInfoMap.end())
+            {
+                // path we should be watching
+                if (m_hCompPort)
+                {
+                    // Currently possibly blocked watching other paths. 
+                    // Trigger GetQueuedCompletionStatus()
+                    // to unblock and allocate pdi(s)
+                    if (!bAlloc_pdi_posted)
+                    {
+                        PostQueuedCompletionStatus(m_hCompPort, (DWORD)ALLOC_PDI, NULL, nullptr);
+                        bAlloc_pdi_posted = true;
+                    }
+                }
+            }
+        }
+    }
+#endif
+}
+
 CPathWatcher::CDirWatchInfo::CDirWatchInfo(CAutoFile&& hDir, const std::wstring& directoryName)
     : m_hDir(std::move(hDir))
     , m_dirName(directoryName)
 {
-    reinterpret_cast<PFILE_NOTIFY_INFORMATION>(m_buffer)->NextEntryOffset = 0;
+    SecureZeroMemory(m_buffer, sizeof(m_buffer));
     SecureZeroMemory(&m_overlapped, sizeof(m_overlapped));
     m_dirPath = m_dirName;
     if (m_dirPath.at(m_dirPath.size() - 1) != '\\')
@@ -332,5 +559,84 @@ CPathWatcher::CDirWatchInfo::~CDirWatchInfo()
 
 bool CPathWatcher::CDirWatchInfo::CloseDirectoryHandle()
 {
+    if (m_hDir)
+    {
+        // DWORD NumberOfBytesTransferred;
+        if (CancelIoEx(m_hDir, &m_overlapped) == 0)
+        {
+            _com_error comError(GetLastError());
+            LPCTSTR    comErrorText = comError.ErrorMessage();
+            CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": CancelIoEx failed (%s)\n"), comErrorText);
+        }
+#if 0
+        while (GetOverlappedResult(m_hDir, &m_overlapped, &NumberOfBytesTransferred, false) == 0)
+        {
+            _com_error comError(GetLastError());
+            LPCTSTR    comErrorText = comError.ErrorMessage();
+            CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": GetOverlappedResult failed (%s)\n"), comErrorText);
+            Sleep(200);
+        }
+#endif
+    }
+
     return m_hDir.CloseHandle();
+}
+
+CPathWatcher::CWatchInfoMap::~CWatchInfoMap()
+{
+    CPathWatcher::CWatchInfoMap::clear();
+}
+
+void CPathWatcher::CWatchInfoMap::clear()
+{
+    // if m_hCompPort is valid then pdi that we delete below will still
+    // be used and returned by GetQueuedCompletionStatus()
+    // 
+    // TO DO: add following statement
+    // assert(!m_hCompPort);
+    if (!empty())
+    {
+        for (auto I = begin(); I != end(); ++I)
+        {
+            CPathWatcher::CDirWatchInfo* info = I->second;
+            // const std::wstring pwstring            = I->first;
+            I->second                         = nullptr;
+            // delete pwstring;
+            delete info;
+        }
+        ((std::map<std::wstring, CDirWatchInfo*, ci_lessW>*)this)->clear();
+    }
+}
+
+CPathWatcher::CWatchInfoMap::iterator CPathWatcher::CWatchInfoMap::CloseDirHandle(CPathWatcher::CWatchInfoMap::iterator it)
+{
+    if (it != end())
+    {
+        CPathWatcher::CDirWatchInfo* info = it->second;
+        // info may still be used by GetQueuedCompletionStatus() so
+        // we just close its m_hDir.
+        // it->second                        = nullptr;
+        // delete info;
+        info->CloseDirectoryHandle();
+        it++;
+    }
+
+    return it;
+}
+
+void CPathWatcher::CWatchInfoMap::CloseDirHandle(const std::wstring p)
+{
+    if (!empty())
+    {
+        auto I = find(p);
+        if (I != end())
+        {
+            CPathWatcher::CDirWatchInfo* info = I->second;
+            // info may still be used by GetQueuedCompletionStatus() so
+            // we just close its m_hDir.
+            // I->second                         = nullptr;
+            // delete info;
+            info->CloseDirectoryHandle();
+        }
+    }
 }
