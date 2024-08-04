@@ -26,7 +26,7 @@
 #include <set>
 #include <map>
 
-constexpr auto READ_DIR_CHANGE_BUFFER_SIZE = 4096;
+constexpr auto READ_DIR_CHANGE_BUFFER_SIZE = 65536/*4096*/;
 constexpr auto MAX_CHANGED_PATHS           = 4000;
 
 /**
@@ -105,7 +105,8 @@ private:
 #define STOPPING  ((DWORD)-3L)
 
     // std::set<std::wstring> watchedPaths; ///< list of watched paths.
-    std::map<std::wstring, long long> watchedPaths; ///< list of watched paths.
+    // v list of watched paths as specified by user (no CPathUtils::AdjustForMaxPath done).
+    std::map<std::wstring, long long> watchedPaths; 
 
     /**
      * Helper class: provides information about watched directories.
@@ -121,7 +122,6 @@ private:
         CDirWatchInfo(CAutoFile&& hDir, const std::wstring& directoryName);
         ~CDirWatchInfo();
 
-    public:
         bool CloseDirectoryHandle();
 
         CAutoFile    m_hDir;                                ///< handle to the directory that we're watching
@@ -155,7 +155,6 @@ private:
         void                                  clear();
     };
 
-    friend class CWatchInfoMap;
     bool                             VerifywatchInfoMap();
     CWatchInfoMap                    m_watchInfoMap;
 
