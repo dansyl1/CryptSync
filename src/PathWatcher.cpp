@@ -88,6 +88,7 @@ void CPathWatcher::Stop()
     }
 }
 
+#if 0
 bool CPathWatcher::RemovePath(const std::wstring& path)
 {
     CAutoWriteLock locker(m_guard);
@@ -97,11 +98,12 @@ bool CPathWatcher::RemovePath(const std::wstring& path)
     // m_hCompPort.CloseHandle(); // Commented as this may stop notifications for all pairs, risking missing file deletes and other changes
     return bRet;
 }
+#endif
 
 bool CPathWatcher::AddPath(const std::wstring& path, long long id)
 {
     CAutoWriteLock locker(m_guard);
-    auto insertResult = watchedPaths.insert({path, id});
+    auto insertResult = uncommittedWatchedPaths.insert({path, id});
 #ifdef _DEBUG
     if (insertResult.second)
     {
@@ -121,6 +123,9 @@ bool CPathWatcher::AddPath(const std::wstring& path, long long id)
 
 void CPathWatcher::CommitPathChanges()
 {
+    CAutoWriteLock locker(m_guard);
+    watchedPaths = uncommittedWatchedPaths;
+    uncommittedWatchedPaths.clear();
     if (m_hCompPort)
     {
         if (PostQueuedCompletionStatus(m_hCompPort, ALLOC_PDI, NULL, nullptr) == 0)
@@ -154,7 +159,7 @@ void CPathWatcher::WorkerThread()
         }
 
         // Note that watchedPaths may become empty as we remove
-        // some path during error handling. Periodically, TrayWindow
+        // some paths during error handling. Periodically, TrayWindow
         // will add back the paths it wants to be monitored, in hope
         // they will eventually be (the error situation somehow
         // got resolved).
@@ -289,27 +294,28 @@ void CPathWatcher::WorkerThread()
                         }
                         SecureZeroMemory(pDirInfo->m_buffer, sizeof(pDirInfo->m_buffer));
                         SecureZeroMemory(&pDirInfo->m_overlapped, sizeof(pDirInfo->m_overlapped));
-                        if (!ReadDirectoryChangesW(pDirInfo->m_hDir,
+                        if (!ReadDirectoryChangesExW(pDirInfo->m_hDir,
                                                    pDirInfo->m_buffer,
                                                    READ_DIR_CHANGE_BUFFER_SIZE,
                                                    TRUE,
                                                    FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE,
                                                    &numBytes, // not used
                                                    &pDirInfo->m_overlapped,
-                                                   nullptr)) // no completion routine!
+                                                   nullptr,   // no completion routine!
+                                                   ReadDirectoryNotifyExtendedInformation)) 
                         {
 #ifdef _DEBUG
                             {
                                 _com_error comError(GetLastError());
                                 LPCTSTR    comErrorText = comError.ErrorMessage();
-                                CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": ReadDirectoryChangesW on %s directory failed (%s) \n"), p->first.c_str(), comErrorText);
+                                CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": ReadDirectoryChangesExW on %s directory failed (%s) \n"), p->first.c_str(), comErrorText);
                             }
 #endif
                             CAutoWriteLock lockerW(m_guard);
                             m_watchInfoMap.CloseDirHandle(p->first.c_str());
                             p = watchedPaths.erase(p); // Get next p from erase() to avoid invalidating the iterator
                             continue;
-                        } // !ReadDirectoryChangesW()
+                        } // !ReadDirectoryChangesExW()
                         CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": watching path %s\n"), p->first.c_str());
                     }
                     p++;
@@ -342,17 +348,18 @@ void CPathWatcher::WorkerThread()
                     }
                     assert(false);
                 }
-                // NOTE: the longer this code takes to execute until ReadDirectoryChangesW
+                // NOTE: the longer this code takes to execute until ReadDirectoryChangesExW
                 // is called again, the higher the chance that we miss some
                 // changes in the file system!
                 if (pdi)
                 {
+                    PFILE_NOTIFY_EXTENDED_INFORMATION pnotify = reinterpret_cast<PFILE_NOTIFY_EXTENDED_INFORMATION>(pdi->m_buffer);
+                    DWORD                             nOffset = 0;
                     if (numBytes != 0)
                     {
-                        PFILE_NOTIFY_INFORMATION pnotify = reinterpret_cast<PFILE_NOTIFY_INFORMATION>(pdi->m_buffer);
-                        DWORD                    nOffset;
                         do
                         {
+                            pnotify           = reinterpret_cast<PFILE_NOTIFY_EXTENDED_INFORMATION>(reinterpret_cast<LPBYTE>(pnotify) + nOffset);
                             size_t bufferSize = pdi->m_dirPath.size() + (pnotify->FileNameLength / sizeof(pnotify->FileName[0])) + 1;
                             auto   buf        = std::make_unique<wchar_t[]>(bufferSize);
                             nOffset           = pnotify->NextEntryOffset;
@@ -376,20 +383,48 @@ void CPathWatcher::WorkerThread()
                                                              pnotify->FileNameLength / sizeof(pnotify->FileName[0]));
 
                             buf[bufferSize - 1] = 0;
-                            pnotify = reinterpret_cast<PFILE_NOTIFY_INFORMATION>(reinterpret_cast<LPBYTE>(pnotify) + nOffset);
                             if (err != 0)
                             {
                                 continue;
                             }
-                            CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": change notification for %s (Action:%d)\n"), buf.get(), action);
+#ifdef _DEBUG
                             {
-                                CAutoWriteLock locker(m_guard);
-                                m_changedPaths.insert(std::wstring(buf.get()));
+                                const static wchar_t* const szActionNames[] = {
+                                    L"ADDED",
+                                    L"REMOVED",
+                                    L"MODIFIED",
+                                    L"RENAMED_OLD_NAME",
+                                    L"RENAMED_NEW_NAME"};
+                                wchar_t szActionName[100];
+                                szActionName[(sizeof(szActionName) / sizeof(szActionName[0])) - 1] = 0;
+                                if (action >= 1 && action < (sizeof(szActionNames) / sizeof(szActionNames[0])))
+                                {
+                                    wcsncpy_s(szActionName, szActionNames[action - 1], (sizeof(szActionName) / sizeof(szActionName[0])) - 1);
+                                }
+                                else
+                                {
+                                    swprintf_s(szActionName, (sizeof(szActionName) / sizeof(szActionName[0])) - 1, L"unknown action %d", action);
+                                }
+                                CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": change notification for %s (%s)\n"), buf.get(), szActionName);
+                            }
+#endif
+
+                            // We don't care about changes to directories, unless one is removed. An addition will be handled
+                            // by the notification for files added/modified under it. A directory modification is irrelevant
+                            // to cryptsync. A directory rename could have a specific handling, renaming the corresponding
+                            // directory instead of re-encrypting/decrypting, but this is not implemented. A file rename 
+                            // must be re-encrypted/decrypted since the filename is in the .7z archive
+                            if (!(pnotify->FileAttributes & FILE_ATTRIBUTE_DIRECTORY) || action == FILE_ACTION_REMOVED)
+                            {
+                                {
+                                    CAutoWriteLock locker(m_guard);
+                                    m_changedPaths.insert(std::wstring(buf.get()));
+                                }
                             }
                         } while (nOffset);
                     }
                     else
-                    {
+                    { // numBytes == 0
 #ifdef _DEBUG
                         if (m_hCompPort)
                         {
@@ -405,7 +440,7 @@ void CPathWatcher::WorkerThread()
                     }
                     SecureZeroMemory(pdi->m_buffer, sizeof(pdi->m_buffer));
                     SecureZeroMemory(&pdi->m_overlapped, sizeof(pdi->m_overlapped));
-                    if (!ReadDirectoryChangesW(pdi->m_hDir,
+                    if (!ReadDirectoryChangesExW(pdi->m_hDir,
                                                pdi->m_buffer,
                                                READ_DIR_CHANGE_BUFFER_SIZE,
                                                TRUE,
@@ -416,10 +451,11 @@ void CPathWatcher::WorkerThread()
                                                              on target file or "archive" on source
                                                */
                                                &numBytes, // not used
-                                               &pdi->m_overlapped,
-                                               nullptr)) // no completion routine!
+                                               &pdi->m_overlapped, 
+                                               nullptr,   // no completion routine!
+                                               ReadDirectoryNotifyExtendedInformation)) 
                     {
-                        // Since the call to ReadDirectoryChangesW failed, just
+                        // Since the call to ReadDirectoryChangesExW failed, just
                         // wait a while. We don't want to have this thread
                         // running using 100% CPU if something goes completely
                         // wrong.
@@ -427,13 +463,13 @@ void CPathWatcher::WorkerThread()
                         {
                             _com_error comError(GetLastError());
                             LPCTSTR    comErrorText = comError.ErrorMessage();
-                            CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": ReadDirectoryChangesW failed (%s) for watched folder \"%s\"\n"), comErrorText, pdi->m_dirPath.c_str());
+                            CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": ReadDirectoryChangesExW failed (%s) for watched folder \"%s\"\n"), comErrorText, pdi->m_dirPath.c_str());
                         }
 #endif
                         pdi->CloseDirectoryHandle();
 
                         Sleep(200);
-                    } // !ReadDirectoryChangesW()
+                    } // !ReadDirectoryChangesExW()
                 } // if (pdi)
             }
         } // if (!watchedPaths.empty())

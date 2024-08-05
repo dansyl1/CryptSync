@@ -53,10 +53,12 @@ public:
      * returns false.
      */
     bool AddPath(const std::wstring& path, long long id = 0);
+#if 0
     /**
      * Removes a path and all its children from the watched list.
      */
     bool RemovePath(const std::wstring& path);
+#endif
 
     /**
      * Commit path changes and trigger watching new list.
@@ -73,10 +75,12 @@ public:
         // m_hCompPort.CloseHandle(); // Commented as this may stop notifications for all pairs, risking missing file deletes and other changes
     }
 
+#if 0
     /**
      * Returns the number of recursively watched paths.
      */
     size_t GetNumberOfWatchedPaths() const { return watchedPaths.size(); }
+#endif
 
     /**
      * Returns all changed paths since the last call to GetChangedPaths
@@ -107,6 +111,7 @@ private:
     // std::set<std::wstring> watchedPaths; ///< list of watched paths.
     // v list of watched paths as specified by user (no CPathUtils::AdjustForMaxPath done).
     std::map<std::wstring, long long> watchedPaths; 
+    std::map<std::wstring, long long> uncommittedWatchedPaths;
 
     /**
      * Helper class: provides information about watched directories.
@@ -158,5 +163,5 @@ private:
     bool                             VerifywatchInfoMap();
     CWatchInfoMap                    m_watchInfoMap;
 
-    std::set<std::wstring> m_changedPaths;
+    std::set<std::wstring>           m_changedPaths;
 };

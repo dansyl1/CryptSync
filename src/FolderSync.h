@@ -73,6 +73,7 @@ public:
     void                           Stop();
     std::map<std::wstring, SyncOp> GetFailures();
     std::set<std::wstring>         GetNotifyIgnores();
+    void                           EraseNotifyIgnores(const std::wstring& ign);
     size_t                         GetFailureCount();
     void                           SetTrayWnd(HWND hTray) { m_trayWnd = hTray; }
     void                           DecryptOnly(bool b) { m_decryptOnly = b; }

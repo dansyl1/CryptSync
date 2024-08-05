@@ -1117,6 +1117,8 @@ bool CFolderSync::EncryptFile(const std::wstring& orig, const std::wstring& cryp
 
             CCircularLog::Instance()(L"ERROR:   error moving temporary encrypted file \"%s\" to \"%s\" (%s)", encryptTmpFile.c_str(), crypt.c_str(), comErrorText);
             DeleteFile(encryptTmpFile.c_str());
+            CAutoWriteLock locker(m_failureGuard);
+            m_failures[orig] = Encrypt;
             return false;
         }
         else
@@ -1747,8 +1749,14 @@ std::set<std::wstring> CFolderSync::GetNotifyIgnores()
 {
     CAutoWriteLock locker(m_notingGuard);
     auto           ignCopy = m_notifyIgnores;
-    m_notifyIgnores.clear();
     return ignCopy;
+}
+
+void CFolderSync::EraseNotifyIgnores(const std::wstring& ign)
+{
+    CAutoWriteLock locker(m_notingGuard);
+    auto           res = m_notifyIgnores.erase(ign);
+    CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": .erase(%s) %s, %d items in m_notifyIgnores\n"), ign.c_str(), res == 0 ? L"failed" : L"successful", m_notifyIgnores.size());
 }
 
 std::wstring CFolderSync::GetFileTimeStringForLog(const FILETIME& ft)
