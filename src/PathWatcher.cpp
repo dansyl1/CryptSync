@@ -229,7 +229,7 @@ void CPathWatcher::WorkerThread()
                     }
                     if (pDirInfo == nullptr || pDirInfo->m_hDir == INVALID_HANDLE_VALUE)
                     {
-                        CAutoFile hDir = CreateFile(CPathUtils::AdjustForMaxPath(p->first).c_str(),
+                        CAutoFile hDir = CreateFile(p->first.c_str(),
                                                     FILE_LIST_DIRECTORY,
                                                     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                                                     nullptr, // security attributes
