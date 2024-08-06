@@ -109,7 +109,7 @@ private:
 #define STOPPING  ((DWORD)-3L)
 
     // std::set<std::wstring> watchedPaths; ///< list of watched paths.
-    // v list of watched paths as specified by user (no CPathUtils::AdjustForMaxPath done).
+    // v list of watched paths after CPathUtils::AdjustForMaxPath is done
     std::map<std::wstring, long long> watchedPaths; 
     std::map<std::wstring, long long> uncommittedWatchedPaths;
 
