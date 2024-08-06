@@ -1124,6 +1124,7 @@ bool CFolderSync::EncryptFile(const std::wstring& orig, const std::wstring& cryp
             DeleteFile(encryptTmpFile.c_str());
             CAutoWriteLock locker(m_failureGuard);
             m_failures[orig] = Encrypt;
+            m_notifyIgnores.erase(crypt);
             return false;
         }
         else
@@ -1132,6 +1133,7 @@ bool CFolderSync::EncryptFile(const std::wstring& orig, const std::wstring& cryp
             DeleteFile(encryptTmpFile.c_str());
             CAutoWriteLock locker(m_failureGuard);
             m_failures[orig] = Encrypt;
+            m_notifyIgnores.erase(crypt);
             CCircularLog::Instance()(L"ERROR:   Failed to encrypt file \"%s\" to \"%s\"", orig.c_str(), crypt.c_str());
             return false;
         }
@@ -1182,6 +1184,7 @@ bool CFolderSync::EncryptFile(const std::wstring& orig, const std::wstring& cryp
         DeleteFile(crypt.c_str());
         CAutoWriteLock locker(m_failureGuard);
         m_failures[orig] = Encrypt;
+        m_notifyIgnores.erase(crypt);
         CCircularLog::Instance()(L"ERROR:   Failed to encrypt file \"%s\" to \"%s\"", orig.c_str(), crypt.c_str());
     }
     return bRet;
@@ -1261,6 +1264,7 @@ bool CFolderSync::DecryptFile(const std::wstring& orig, const std::wstring& cryp
             DeleteFile(orig.c_str());
             CAutoWriteLock locker(m_failureGuard);
             m_failures[orig] = Decrypt;
+            m_notifyIgnores.erase(orig);
             CCircularLog::Instance()(L"ERROR:   Failed to decrypt file \"%s\" to \"%s\"", crypt.c_str(), orig.c_str());
             return false;
         }
@@ -1300,6 +1304,7 @@ bool CFolderSync::DecryptFile(const std::wstring& orig, const std::wstring& cryp
         DeleteFile(orig.c_str());
         CAutoWriteLock locker(m_failureGuard);
         m_failures[orig] = Decrypt;
+        m_notifyIgnores.erase(orig);
         CCircularLog::Instance()(L"ERROR:   Failed to decrypt file \"%s\" to \"%s\"", crypt.c_str(), orig.c_str());
     }
     return bRet;
