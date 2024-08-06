@@ -94,7 +94,7 @@ bool CPathWatcher::RemovePath(const std::wstring& path)
     CAutoWriteLock locker(m_guard);
 
     CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": RemovePath for %s\n"), path.c_str());
-    bool bRet = (watchedPaths.erase(path) != 0);
+    bool bRet = (watchedPaths.erase(CPathUtils::AdjustForMaxPath(path)) != 0);
     // m_hCompPort.CloseHandle(); // Commented as this may stop notifications for all pairs, risking missing file deletes and other changes
     return bRet;
 }
@@ -103,7 +103,7 @@ bool CPathWatcher::RemovePath(const std::wstring& path)
 bool CPathWatcher::AddPath(const std::wstring& path, long long id)
 {
     CAutoWriteLock locker(m_guard);
-    auto insertResult = uncommittedWatchedPaths.insert({path, id});
+    auto insertResult = uncommittedWatchedPaths.insert({CPathUtils::AdjustForMaxPath(path), id});
 #ifdef _DEBUG
     if (insertResult.second)
     {
