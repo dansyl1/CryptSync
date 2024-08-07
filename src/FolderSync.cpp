@@ -529,8 +529,6 @@ int CFolderSync::SyncFolder(const PairData& pt)
         m_pProgDlg->SetLine(2, L"");
         m_pProgDlg->SetProgress(m_progress, m_progressTotal);
     }
-    if (m_trayWnd)
-        PostMessage(m_trayWnd, WM_PROGRESS, m_progress, m_progressTotal);
     {
         CAutoFile hTest = CreateFile(pt.m_origPath.c_str(), GENERIC_READ, FILE_SHARE_DELETE | FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
         if (!hTest)
@@ -573,6 +571,8 @@ int CFolderSync::SyncFolder(const PairData& pt)
 
     int retVal = ErrorNone;
 
+    if (m_trayWnd)
+        PostMessage(m_trayWnd, WM_PROGRESS, m_progress, m_progressTotal);
     m_progressTotal += static_cast<DWORD>(origFileList.size() + cryptFileList.size());
 
     auto lastSaveTicks = GetTickCount64();
@@ -982,9 +982,10 @@ bool CFolderSync::EncryptFile(const std::wstring& orig, const std::wstring& cryp
         // But when 7-zip fails, it destroys a possible already existing encrypted file instead of
         // just leaving it as it is. So by first checking if the source file
         // can be read, we reduce the chances of 7-zip destroying the target file.
-        CAutoFile hFile = CreateFile(orig.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
+        CAutoFile hFile = CreateFile(orig.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
         if (!hFile.IsValid())
             return false;
+        }
         LARGE_INTEGER fileSize = {};
         GetFileSizeEx(hFile, &fileSize);
         hFile.CloseHandle();
