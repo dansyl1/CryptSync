@@ -984,6 +984,11 @@ bool CFolderSync::EncryptFile(const std::wstring& orig, const std::wstring& cryp
         // can be read, we reduce the chances of 7-zip destroying the target file.
         CAutoFile hFile = CreateFile(orig.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
         if (!hFile.IsValid())
+        {
+            _com_error comError(::GetLastError());
+            LPCTSTR    comErrorText = comError.ErrorMessage();
+
+            CCircularLog::Instance()(L"ERROR:   \"%s\" error determining \"%s\"'s file size, encryption aborted.", comErrorText, orig.c_str());
             return false;
         }
         LARGE_INTEGER fileSize = {};
