@@ -189,12 +189,10 @@ LRESULT CALLBACK CTrayWindow::WinMsgHandler(HWND hwnd, UINT uMsg, WPARAM wParam,
             {
                 if (!pair.m_enabled)
                     continue;
-                std::wstring origPath  = pair.m_origPath;
-                std::wstring cryptPath = pair.m_cryptPath;
                 if ((pair.m_syncDir == BothWays) || (pair.m_syncDir == SrcToDst))
-                    m_watcher.AddPath(origPath);
+                    m_watcher.AddPath(pair.m_origPath);
                 if ((pair.m_syncDir == BothWays) || (pair.m_syncDir == DstToSrc))
-                    m_watcher.AddPath(cryptPath);
+                    m_watcher.AddPath(pair.m_cryptPath);
             }
             SetTimer(*this, TIMER_DETECTCHANGES, TIMER_DETECTCHANGESINTERVAL, nullptr);
             if (g_timer_fullScanInterval > 0)
@@ -454,7 +452,12 @@ LRESULT CTrayWindow::DoCommand(int id)
             {
                 g_timer_fullScanInterval = CRegStdDWORD(L"Software\\CryptSync\\FullScanInterval", 60000 * 30);
                 if (g_timer_fullScanInterval > 0)
+                {
+                    // SyncFolders() no longer stops a background task. We stop it
+                    // directly and then launch a sync with new parameters
+                    m_folderSyncer.Stop();  
                     m_folderSyncer.SyncFolders(g_pairs);
+                }
                 else
                     m_folderSyncer.SetPairs(g_pairs);
                 // m_watcher.ClearPaths();
