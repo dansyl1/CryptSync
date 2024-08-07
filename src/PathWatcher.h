@@ -134,7 +134,8 @@ private:
         __declspec(align(sizeof(DWORD)))                    ///< buffer must be DWORD-aligned as per doc
         CHAR         m_buffer[READ_DIR_CHANGE_BUFFER_SIZE]; ///< buffer for ReadDirectoryChangesW
         OVERLAPPED   m_overlapped;
-        std::wstring m_dirPath; ///< the directory name we're watching with a backslash at the end
+        std::wstring m_dirPath;                             ///< the directory name we're watching with a backslash at the end
+        bool         m_bNotSupported;                       ///< true if we cannot monitor a path (driver limitation, for example)
     };
 
     class CWatchInfoMap : std::map<std::wstring, CDirWatchInfo*, ci_lessW>
@@ -148,8 +149,10 @@ private:
         ~CWatchInfoMap();
         using std::map<std::wstring, CDirWatchInfo*, ci_lessW>::map; // inherit constructors
         using std::map<std::wstring, CDirWatchInfo*, ci_lessW>::find;
-        using std::map<std::wstring, CDirWatchInfo*, ci_lessW>::end;
-        using std::map<std::wstring, CDirWatchInfo*, ci_lessW>::begin;
+        //using std::map<std::wstring, CDirWatchInfo*, ci_lessW>::end;
+        //using std::map<std::wstring, CDirWatchInfo*, ci_lessW>::begin;
+        using std::map<std::wstring, CDirWatchInfo*, ci_lessW>::cend;
+        using std::map<std::wstring, CDirWatchInfo*, ci_lessW>::cbegin;
         using std::map<std::wstring, CDirWatchInfo*, ci_lessW>::empty;
         using std::map<std::wstring, CDirWatchInfo*, ci_lessW>::operator[];
         // using std::map<std::wstring, CDirWatchInfo*, ci_lessW>::operator=;
