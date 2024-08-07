@@ -89,14 +89,14 @@ private:
     int                                        SyncFolderThread();
     int                                        SyncFolder(const PairData& pt);
     std::map<std::wstring, FileData, ci_lessW> GetFileList(bool orig, const std::wstring& path, const std::wstring& password, bool encnames, bool encnamesnew, bool use7Z, bool useGpg, DWORD& error) const;
-    bool                                       EncryptFile(const std::wstring& orig, const std::wstring& crypt, const std::wstring& password, const FileData& fd, bool useGpg, bool noCompress, int compresssize, bool resetArchAttr);
-    bool                                       DecryptFile(const std::wstring& orig, const std::wstring& crypt, const std::wstring& password, const FileData& fd, bool useGpg);
+    bool                                       EncryptFile(const std::wstring& orig, const std::wstring& crypt, const std::wstring& password, const FileData& fd, bool useGpg, bool noCompress, int compresssize, bool resetArchAttr, SyncDir syncDir);
+    bool                                       DecryptFile(const std::wstring& orig, const std::wstring& crypt, const std::wstring& password, const FileData& fd, bool useGpg, SyncDir syncDir);
     static std::wstring                        GetFileTimeStringForLog(const FILETIME& ft);
     bool                                       RunGPG(LPWSTR cmdline, const std::wstring& cwd) const;
     // Would AdjustFileAttributes be a candidate for sktools?
     void                                       AdjustFileAttributes(const std::wstring& orig, DWORD dwFileAttributesToClear, DWORD dwFileAttributesToSet) const;
     static bool                                DeletePathToTrash(const std::wstring& path);
-
+    BOOL                                       CSCopyFile(std::wstring ExistingFileName, std::wstring NewFileName, bool resetOriginalArchAttr, SyncDir syncDir, SyncOp syncOp);
     CReaderWriterLock                          m_guard;
     CReaderWriterLock                          m_failureGuard;
     CReaderWriterLock                          m_notingGuard;
