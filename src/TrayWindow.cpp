@@ -295,7 +295,7 @@ LRESULT CALLBACK CTrayWindow::WinMsgHandler(HWND hwnd, UINT uMsg, WPARAM wParam,
                     }
                     auto newPaths = m_watcher.GetChangedPaths();
                     m_lastChangedPaths.insert(newPaths.begin(), newPaths.end());
-                    auto ignores = m_folderSyncer.GetNotifyIgnores();
+                    auto ignores  = m_folderSyncer.GetNotifyIgnores();
                     if (!m_lastChangedPaths.empty() && !ignores.empty())
                     {
                         for (const auto& ign : ignores)
@@ -370,7 +370,7 @@ LRESULT CALLBACK CTrayWindow::WinMsgHandler(HWND hwnd, UINT uMsg, WPARAM wParam,
                             }
                             auto newPaths = m_watcher.GetChangedPaths();
                             m_lastChangedPaths.insert(newPaths.begin(), newPaths.end());
-                            auto ignores = m_folderSyncer.GetNotifyIgnores();
+                            auto ignores       = m_folderSyncer.GetNotifyIgnores();
                             if (!m_lastChangedPaths.empty() && !ignores.empty())
                             {
                                 for (const auto& ign : ignores)

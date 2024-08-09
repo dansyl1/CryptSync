@@ -70,7 +70,7 @@ public:
     /**
      * Returns the number of recursively watched paths.
      */
-    size_t                 GetNumberOfWatchedPaths() const { return watchedPaths.size(); }
+    size_t GetNumberOfWatchedPaths() const { return watchedPaths.size(); }
 
     /**
      * Returns all changed paths since the last call to GetChangedPaths
@@ -80,7 +80,7 @@ public:
     /**
      * Stops the watching thread.
      */
-    void                   Stop();
+    void Stop();
 
 private:
     static unsigned int __stdcall ThreadEntry(void* pContext);
@@ -89,10 +89,10 @@ private:
     void ClearInfoMap();
 
 private:
-    CReaderWriterLock      m_guard;
-    CAutoGeneralHandle     m_hThread;
-    CAutoGeneralHandle     m_hCompPort;
-    volatile LONG          m_bRunning;
+    CReaderWriterLock  m_guard;
+    CAutoGeneralHandle m_hThread;
+    CAutoGeneralHandle m_hCompPort;
+    volatile LONG      m_bRunning;
 
     std::set<std::wstring> watchedPaths; ///< list of watched paths.
 
@@ -102,8 +102,8 @@ private:
     class CDirWatchInfo
     {
     private:
-        CDirWatchInfo()                                    = delete;
-        CDirWatchInfo(const CDirWatchInfo& i)              = delete;
+        CDirWatchInfo()                       = delete;
+        CDirWatchInfo(const CDirWatchInfo& i) = delete;
         CDirWatchInfo& operator=(const CDirWatchInfo& rhs) = delete;
 
     public:
@@ -111,18 +111,18 @@ private:
         ~CDirWatchInfo();
 
     public:
-        bool         CloseDirectoryHandle();
+        bool CloseDirectoryHandle();
 
-        CAutoFile    m_hDir;                            ///< handle to the directory that we're watching
-        std::wstring m_dirName;                         ///< the directory that we're watching
-        __declspec(align(sizeof(DWORD)))                ///< buffer must be DWORD-aligned as per doc
-            CHAR m_buffer[READ_DIR_CHANGE_BUFFER_SIZE]; ///< buffer for ReadDirectoryChangesW
+        CAutoFile    m_hDir;                                ///< handle to the directory that we're watching
+        std::wstring m_dirName;                             ///< the directory that we're watching
+        __declspec(align(sizeof(DWORD)))                    ///< buffer must be DWORD-aligned as per doc
+        CHAR         m_buffer[READ_DIR_CHANGE_BUFFER_SIZE]; ///< buffer for ReadDirectoryChangesW
         OVERLAPPED   m_overlapped;
         std::wstring m_dirPath; ///< the directory name we're watching with a backslash at the end
     };
 
     std::map<HANDLE, CDirWatchInfo*> m_watchInfoMap;
 
-    HDEVNOTIFY                       m_hDev;
-    std::set<std::wstring>           m_changedPaths;
+    HDEVNOTIFY             m_hDev;
+    std::set<std::wstring> m_changedPaths;
 };
