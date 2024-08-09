@@ -21,7 +21,6 @@
 
 #include "ReaderWriterLock.h"
 #include "SmartHandle.h"
-#include "StringUtils.h"
 #include <string>
 #include <set>
 #include <map>
@@ -52,16 +51,11 @@ public:
      * watched recursively, then the new path is just ignored and the method
      * returns false.
      */
-    bool AddPath(const std::wstring& path, long long id = 0);
+    bool AddPath(const std::wstring& path);
     /**
      * Removes a path and all its children from the watched list.
      */
     bool RemovePath(const std::wstring& path);
-
-    /**
-     * Commit path changes and trigger watching new list.
-     */
-    void CommitPathChanges(void);
 
     /**
      * Removes all watched paths
@@ -70,7 +64,7 @@ public:
     {
         CAutoWriteLock locker(m_guard);
         watchedPaths.clear();
-        // m_hCompPort.CloseHandle(); // Commented as this may stop notifications for all pairs, risking missing file deletes and other changes
+        m_hCompPort.CloseHandle();
     }
 
     /**
@@ -100,13 +94,7 @@ private:
     CAutoGeneralHandle m_hCompPort;
     volatile LONG      m_bRunning;
 
-#define FREE_PDI  ((DWORD)-1L)
-#define ALLOC_PDI ((DWORD)-2L)
-#define STOPPING  ((DWORD)-3L)
-
-    // std::set<std::wstring> watchedPaths; ///< list of watched paths.
-    // v list of watched paths as specified by user (no CPathUtils::AdjustForMaxPath done).
-    std::map<std::wstring, long long> watchedPaths; 
+    std::set<std::wstring> watchedPaths; ///< list of watched paths.
 
     /**
      * Helper class: provides information about watched directories.
@@ -122,6 +110,7 @@ private:
         CDirWatchInfo(CAutoFile&& hDir, const std::wstring& directoryName);
         ~CDirWatchInfo();
 
+    public:
         bool CloseDirectoryHandle();
 
         CAutoFile    m_hDir;                                ///< handle to the directory that we're watching
@@ -132,31 +121,8 @@ private:
         std::wstring m_dirPath; ///< the directory name we're watching with a backslash at the end
     };
 
-    class CWatchInfoMap : std::map<std::wstring, CDirWatchInfo*, ci_lessW>
-    {
-    private:
-        // CWatchInfoMap() = delete;
-        CWatchInfoMap(const CDirWatchInfo& i)              = delete;
-        CWatchInfoMap& operator=(const CWatchInfoMap& rhs) = delete;
+    std::map<HANDLE, CDirWatchInfo*> m_watchInfoMap;
 
-    public:
-        ~CWatchInfoMap();
-        using std::map<std::wstring, CDirWatchInfo*, ci_lessW>::map; // inherit constructors
-        using std::map<std::wstring, CDirWatchInfo*, ci_lessW>::find;
-        using std::map<std::wstring, CDirWatchInfo*, ci_lessW>::end;
-        using std::map<std::wstring, CDirWatchInfo*, ci_lessW>::begin;
-        using std::map<std::wstring, CDirWatchInfo*, ci_lessW>::empty;
-        using std::map<std::wstring, CDirWatchInfo*, ci_lessW>::operator[];
-        // using std::map<std::wstring, CDirWatchInfo*, ci_lessW>::operator=;
-        // using std::map<std::wstring, CDirWatchInfo*, ci_lessW>::erase;
-        // using std::map<std::wstring, CDirWatchInfo*, ci_lessW>::clear;
-        void                                  CloseDirHandle(const std::wstring p);
-        CPathWatcher::CWatchInfoMap::iterator CloseDirHandle(CPathWatcher::CWatchInfoMap::iterator it);
-        void                                  clear();
-    };
-
-    bool                             VerifywatchInfoMap();
-    CWatchInfoMap                    m_watchInfoMap;
-
+    HDEVNOTIFY             m_hDev;
     std::set<std::wstring> m_changedPaths;
 };

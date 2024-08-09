@@ -207,7 +207,6 @@ LRESULT CALLBACK CTrayWindow::WinMsgHandler(HWND hwnd, UINT uMsg, WPARAM wParam,
                 ::PostMessage(*this, WM_COMMAND, MAKEWPARAM(IDM_OPTIONS, 1), 0);
             m_folderSyncer.SetPairs(g_pairs);
             m_folderSyncer.SetTrayWnd(m_hwnd);
-            m_watcher.CommitPathChanges();
         }
         break;
         case WM_COMMAND:
@@ -293,23 +292,19 @@ LRESULT CALLBACK CTrayWindow::WinMsgHandler(HWND hwnd, UINT uMsg, WPARAM wParam,
                                 lastChangedPath++;
                             }
                         }
-                        CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": postponed %d syncs\n"), m_lastChangedPaths.size());
                     }
                     auto newPaths = m_watcher.GetChangedPaths();
                     m_lastChangedPaths.insert(newPaths.begin(), newPaths.end());
                     auto ignores  = m_folderSyncer.GetNotifyIgnores();
-                    if (!m_lastChangedPaths.empty())
+                    if (!m_lastChangedPaths.empty() && !ignores.empty())
                     {
-                        if (!ignores.empty())
+                        for (const auto& ign : ignores)
                         {
-                            for (const auto& ign : ignores)
+                            auto foundIt = m_lastChangedPaths.find(ign);
+                            if (foundIt != m_lastChangedPaths.end())
                             {
-                                auto foundIt = m_lastChangedPaths.find(ign);
-                                if (foundIt != m_lastChangedPaths.end())
-                                {
-                                    CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": remove notification for file %s\n"), foundIt->c_str());
-                                    m_lastChangedPaths.erase(foundIt);
-                                }
+                                CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": remove notification for file %s\n"), foundIt->c_str());
+                                m_lastChangedPaths.erase(foundIt);
                             }
                         }
                     }
@@ -331,10 +326,7 @@ LRESULT CALLBACK CTrayWindow::WinMsgHandler(HWND hwnd, UINT uMsg, WPARAM wParam,
 
                     if (m_watcher.GetNumberOfWatchedPaths() != watchPathCount)
                     {
-                        // m_watcher will delete from its list any path it cannot
-                        // watch (removable disk, network failure).
-                        // Adding all pairs on timer in hope the situation
-                        // got resolved.
+                        m_watcher.ClearPaths();
                         for (const auto& pair : g_pairs)
                         {
                             if (!pair.m_enabled)
@@ -346,7 +338,6 @@ LRESULT CALLBACK CTrayWindow::WinMsgHandler(HWND hwnd, UINT uMsg, WPARAM wParam,
                             if ((pair.m_syncDir == BothWays) || (pair.m_syncDir == DstToSrc))
                                 m_watcher.AddPath(cryptPath);
                         }
-                        m_watcher.CommitPathChanges();
                     }
 
                     m_niData.hIcon = m_folderSyncer.GetFailureCount() > 0 ? m_iconError : m_iconNormal;
@@ -373,11 +364,9 @@ LRESULT CALLBACK CTrayWindow::WinMsgHandler(HWND hwnd, UINT uMsg, WPARAM wParam,
                                     }
                                     else
                                     {
-                                        CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": postponing synced %s (TIMER_FULLSCAN)\n"), lastChangedPath->c_str());
                                         lastChangedPath++;
                                     }
                                 }
-                                CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": postponed %d syncs (TIMER_FULLSCAN)\n"), m_lastChangedPaths.size());
                             }
                             auto newPaths = m_watcher.GetChangedPaths();
                             m_lastChangedPaths.insert(newPaths.begin(), newPaths.end());
@@ -397,7 +386,7 @@ LRESULT CALLBACK CTrayWindow::WinMsgHandler(HWND hwnd, UINT uMsg, WPARAM wParam,
                         }
                         // now start the full scan
                         m_folderSyncer.SyncFolders(g_pairs);
-                        // m_watcher.ClearPaths();
+                        m_watcher.ClearPaths();
                         for (const auto& pair : g_pairs)
                         {
                             if (!pair.m_enabled)
@@ -409,7 +398,6 @@ LRESULT CALLBACK CTrayWindow::WinMsgHandler(HWND hwnd, UINT uMsg, WPARAM wParam,
                             if ((pair.m_syncDir == BothWays) || (pair.m_syncDir == DstToSrc))
                                 m_watcher.AddPath(cryptPath);
                         }
-                        m_watcher.CommitPathChanges();
                     }
                     if (g_timer_fullScanInterval > 0)
                         SetTimer(*this, TIMER_FULLSCAN, g_timer_fullScanInterval, nullptr);
@@ -471,45 +459,19 @@ LRESULT CTrayWindow::DoCommand(int id)
                     m_folderSyncer.SyncFolders(g_pairs);
                 else
                     m_folderSyncer.SetPairs(g_pairs);
-                // m_watcher.ClearPaths();
-
-                // Path removal need only be done after the Options dialog is displayed
-                for (const auto& pair : g_pairs)
+                m_watcher.ClearPaths();
+                for (auto it = g_pairs.cbegin(); it != g_pairs.cend(); ++it)
                 {
-                    std::wstring origPath  = pair.m_origPath;
-                    std::wstring cryptPath = pair.m_cryptPath;
-                    if (!pair.m_enabled)
+                    std::wstring origPath  = it->m_origPath;
+                    std::wstring cryptPath = it->m_cryptPath;
+                    if (it->m_enabled)
                     {
-                        if ((pair.m_syncDir == BothWays) || (pair.m_syncDir == SrcToDst))
-                        {
-                            m_watcher.RemovePath(origPath);
-                            if (pair.m_syncDir == SrcToDst)
-                                m_watcher.RemovePath(cryptPath);
-                        }
-                        if ((pair.m_syncDir == BothWays) || (pair.m_syncDir == DstToSrc))
-                        {
-                            m_watcher.RemovePath(cryptPath);
-                            if (pair.m_syncDir == DstToSrc)
-                                m_watcher.RemovePath(origPath);
-                        }
-                    }
-                    else
-                    {
-                        if ((pair.m_syncDir == BothWays) || (pair.m_syncDir == SrcToDst))
-                        {
+                        if ((it->m_syncDir == BothWays) || (it->m_syncDir == SrcToDst))
                             m_watcher.AddPath(origPath);
-                            if (pair.m_syncDir == SrcToDst)
-                                m_watcher.RemovePath(cryptPath);
-                        }
-                        if ((pair.m_syncDir == BothWays) || (pair.m_syncDir == DstToSrc))
-                        {
+                        if ((it->m_syncDir == BothWays) || (it->m_syncDir == DstToSrc))
                             m_watcher.AddPath(cryptPath);
-                            if (pair.m_syncDir == DstToSrc)
-                                m_watcher.RemovePath(origPath);
-                        }
                     }
                 }
-                m_watcher.CommitPathChanges();
                 SetTimer(*this, TIMER_DETECTCHANGES, TIMER_DETECTCHANGESINTERVAL, nullptr);
                 if (g_timer_fullScanInterval > 0)
                     SetTimer(*this, TIMER_FULLSCAN, g_timer_fullScanInterval, nullptr);
