@@ -547,7 +547,12 @@ int CFolderSync::SyncFolder(const PairData& pt)
     }
     DWORD dwErr        = 0;
     auto  origFileList = GetFileList(true, pt.m_origPath, pt.m_password, pt.m_encNames, pt.m_encNamesNew, pt.m_use7Z, pt.m_useGpg, dwErr);
-
+#if 0
+    for (auto it = origFileList.cbegin(); (it != origFileList.cend()) && m_bRunning; ++it)
+    {
+        assert(_wcsicmp(it->first.c_str(), it->second.fileRelPath.c_str()) == 0);
+    }
+#endif
     if (dwErr)
     {
         CCircularLog::Instance()(L"ERROR:   error enumerating path \"%s\", skipped", pt.m_origPath.c_str());
@@ -563,6 +568,12 @@ int CFolderSync::SyncFolder(const PairData& pt)
     }
 
     auto cryptFileList = GetFileList(false, pt.m_cryptPath, pt.m_password, pt.m_encNames, pt.m_encNamesNew, pt.m_use7Z, pt.m_useGpg, dwErr);
+#if 0
+    for (auto it = cryptFileList.cbegin(); (it != cryptFileList.cend()) && m_bRunning; ++it)
+    {
+        assert(_wcsicmp(it->first.c_str(), it->second.fileRelPath.c_str()) == 0);
+    }
+#endif
     if (dwErr)
     {
         CCircularLog::Instance()(L"ERROR:   error enumerating path \"%s\", skipped", pt.m_cryptPath.c_str());
@@ -637,7 +648,12 @@ int CFolderSync::SyncFolder(const PairData& pt)
                     // remove the original file
                     CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": counterpart of file %s does not exist in crypted folder, delete file\n"), it->first.c_str());
                     CCircularLog::Instance()(_T("INFO:    counterpart of file %s does not exist in crypted folder, delete file"), it->first.c_str());
-                    std::wstring orig = CPathUtils::Append(pt.m_origPath, it->second.fileRelPath);
+                    // fileRelPath can / should be removed, it is only
+                    // used in two locations and exploratory code has
+                    // been put in place to test it is ok to remove it.
+                    // Memory usage will be reduce between 40 to 50%
+                    assert(_wcsicmp(it->first.c_str(), it->second.fileRelPath.c_str()) == 0);
+                    std::wstring orig = CPathUtils::Append(pt.m_origPath, it->first.c_str());
 
                     // No need to adjust m_notifyIgnores as we are in DestToSrc and not BothWays
                     if (!DeletePathToTrash(orig))
@@ -655,6 +671,8 @@ int CFolderSync::SyncFolder(const PairData& pt)
         }
         else
         {
+            // File exists in the encrypted folder (remove it from list 
+            // no need to processes it twice:
             LONG cmp = 0;
             if (pt.m_fat)
             {
@@ -769,7 +787,13 @@ int CFolderSync::SyncFolder(const PairData& pt)
                     }
                 }
             }
-        }
+            // Remove item from cryptFileList, 
+            // no need to processes it again in the loop below
+            cryptFileList.erase(cryptIt);
+            // By erasing the entry, we just "processed"
+            // it
+            ++m_progress;
+        } // File exists in the encrypted folder 
     }
     // now go through the encrypted file list and if there's a file that's not in the original file list,
     // decrypt it
@@ -808,7 +832,13 @@ int CFolderSync::SyncFolder(const PairData& pt)
                     // remove the encrypted file
                     CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": counterpart of file %s does not exist in src folder, delete file\n"), it->first.c_str());
                     CCircularLog::Instance()(_T("INFO:    counterpart of file %s does not exist in src folder, delete file"), it->first.c_str());
-                    std::wstring crypt = CPathUtils::Append(pt.m_cryptPath, it->second.fileRelPath);
+
+                    // Handle the case where the file in the encrypted directory is not a
+                    // cryptsync archive
+                    std::wstring FileToDelete = it->second.filenameEncrypted ? 
+                        GetEncryptedFilename(it->first, pt.m_password, pt.m_encNames, pt.m_encNamesNew, pt.m_use7Z, pt.m_useGpg) : 
+                        it->first;
+                    std::wstring crypt        = CPathUtils::Append(pt.m_cryptPath, FileToDelete);
                     // No need to adjust m_notifyIgnores as we are in SrcToDst and not BothWays
                     if (!DeletePathToTrash(crypt))
                     {
@@ -841,20 +871,38 @@ int CFolderSync::SyncFolder(const PairData& pt)
             {
                 // decrypt the file
                 CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": decrypt file %s to %s\n"), it->first.c_str(), pt.m_origPath.c_str());
-                std::wstring cryptPath = CPathUtils::Append(pt.m_cryptPath, it->second.fileRelPath);
+#ifdef _DEBUG
+                // fileRelPath can / should be removed, it is only
+                // used in two locations and exploratory code has
+                // been put in place to test it is ok to remove it.
+                // Memory usage will be reduce between 40 to 50%
+                std::wstring FileToDelete;
+                if (it->second.filenameEncrypted)
+                    FileToDelete  = GetEncryptedFilename(it->first, pt.m_password, pt.m_encNames, pt.m_encNamesNew, pt.m_use7Z, pt.m_useGpg);
+                else 
+                    FileToDelete = it->first;
+                assert(_wcsicmp(FileToDelete.c_str(), it->second.fileRelPath.c_str()) == 0);
+#endif
+                std::wstring cryptPath = CPathUtils::Append(pt.m_cryptPath, FileToDelete);
                 std::wstring origPath  = CPathUtils::Append(pt.m_origPath, it->first);
                 if (!DecryptFile(origPath, cryptPath, pt.m_password, it->second, pt.m_useGpg, pt.m_syncDir))
                 {
                     retVal |= ErrorCrypt;
                     if (!it->second.filenameEncrypted)
                     {
+                        // File in the encrypted directory was probably not
+                        // created by cryptsync, it does not have a filename matching
+                        // a cryptsync archive name. Move it to the source folder.
                         {
+                            // Don't want notification on file disappearing
+                            // from the encrypted folder.
                             CAutoWriteLock nlocker(m_notingGuard);
                             m_notifyIgnores.insert(cryptPath);
                         }
                         if (!MoveFileEx(cryptPath.c_str(), origPath.c_str(), MOVEFILE_COPY_ALLOWED))
                         {
                             {
+                                // File wasn't moved, no disappearing to ignore
                                 CAutoWriteLock nlocker(m_notingGuard);
                                 m_notifyIgnores.erase(cryptPath);
                             }
@@ -880,7 +928,7 @@ int CFolderSync::SyncFolder(const PairData& pt)
     return retVal;
 }
 
-std::map<std::wstring, FileData, ci_lessW> CFolderSync::GetFileList(bool orig, const std::wstring& path, const std::wstring& password, bool encnames, bool encnamesnew, bool use7Z, bool useGpg, DWORD& error) const
+std::map<std::wstring, FileData> CFolderSync::GetFileList(bool orig, const std::wstring& path, const std::wstring& password, bool encnames, bool encnamesnew, bool use7Z, bool useGpg, DWORD& error) const
 {
     error                 = 0;
     std::wstring enumpath = path;
@@ -888,7 +936,7 @@ std::map<std::wstring, FileData, ci_lessW> CFolderSync::GetFileList(bool orig, c
         enumpath += L"\\";
     CDirFileEnum                               enumerator(enumpath);
 
-    std::map<std::wstring, FileData, ci_lessW> fileList;
+    std::map<std::wstring, FileData> fileList;
     std::wstring                               filePath;
     bool                                       isDir    = false;
     bool                                       bRecurse = true;
@@ -921,12 +969,16 @@ std::map<std::wstring, FileData, ci_lessW> CFolderSync::GetFileList(bool orig, c
             else
                 relPath = filePath.substr(enumpath.size() + 1);
         }
+        // fileRelPath can / should be removed, it is only
+        // used in two locations and exploratory code has 
+        // been put in place to test it is ok to remove it.
+        // Memory usage will be reduce between 40 to 50%
         fd.fileRelPath                = relPath;
 
         std::wstring decryptedRelPath = relPath;
         if (!orig)
             decryptedRelPath = GetDecryptedFilename(relPath, password, encnames, encnamesnew, use7Z, useGpg);
-        fd.filenameEncrypted = (_wcsicmp(decryptedRelPath.c_str(), fd.fileRelPath.c_str()) != 0);
+        fd.filenameEncrypted = (_wcsicmp(decryptedRelPath.c_str(), relPath.c_str()) != 0);
         if (fd.filenameEncrypted)
         {
             if (use7Z && !orig)
@@ -983,6 +1035,7 @@ bool CFolderSync::EncryptFile(const std::wstring& orig, const std::wstring& cryp
         // just leaving it as it is. So by first checking if the source file
         // can be read, we reduce the chances of 7-zip destroying the target file.
         CAutoFile hFile = CreateFile(orig.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
+        Sleep(0 * 1000);
         if (!hFile.IsValid())
         {
             _com_error comError(::GetLastError());
@@ -1087,6 +1140,7 @@ bool CFolderSync::EncryptFile(const std::wstring& orig, const std::wstring& cryp
             CCircularLog::Instance()(L"ERROR:   Failed to encrypt file \"%s\" to \"%s\"", orig.c_str(), crypt.c_str());
             if (syncDir == BothWays)
             {
+                // No need to ignore the file change (encrypt failed)
                 CAutoWriteLock nLocker(m_notingGuard);
                 m_notifyIgnores.erase(crypt);
             }
@@ -1142,6 +1196,7 @@ bool CFolderSync::EncryptFile(const std::wstring& orig, const std::wstring& cryp
         CCircularLog::Instance()(L"ERROR:   Failed to encrypt file \"%s\" to \"%s\"", orig.c_str(), crypt.c_str());
         if (syncDir == BothWays)
         {
+            // No need to ignore the file change (encrypt failed)
             CAutoWriteLock nLocker(m_notingGuard);
             m_notifyIgnores.erase(crypt);
         }
@@ -1235,7 +1290,7 @@ bool CFolderSync::DecryptFile(const std::wstring& orig, const std::wstring& cryp
             m_failures[orig] = Decrypt;
             if (syncDir == BothWays)
             {
-                // Ignore the file change cryptsync will trigger
+                // No need to ignore the file change (decrypt failed)
                 CAutoWriteLock nLocker(m_notingGuard);
                 m_notifyIgnores.erase(orig);
             }
@@ -1628,7 +1683,15 @@ void CFolderSync::AdjustFileAttributes(const std::wstring& fName, DWORD dwFileAt
     }
     else
     {
-        bRet            = false;
+        WIN32_FILE_ATTRIBUTE_DATA fData2 = {};
+        if ((bRet = GetFileAttributesEx(fName.c_str(), GetFileExInfoStandard, &fData2)) != 0)
+        {
+            if (memcmp(&fData.ftLastWriteTime,  &fData2.ftLastWriteTime,  sizeof(fData2.ftLastWriteTime)) || 
+                memcmp(&fData.ftCreationTime,   &fData2.ftCreationTime,   sizeof(fData2.ftCreationTime))  ||
+                memcmp(&fData.ftLastAccessTime, &fData2.ftLastAccessTime, sizeof(fData2.ftLastAccessTime)) != 0)
+                DebugBreak();
+        }
+            bRet            = false;
         // Use FILE_WRITE_ATTRIBUTES below to prevent sharing violation if working on
         // file open by another application
         CAutoFile hFile = CreateFile(fName.c_str(), FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
@@ -1640,7 +1703,7 @@ void CFolderSync::AdjustFileAttributes(const std::wstring& fName, DWORD dwFileAt
             {
                 if (m_pProgDlg && m_pProgDlg->HasUserCancelled())
                     break;
-                bRet  = !!SetFileTime(hFile, &fData.ftCreationTime, &fData.ftLastAccessTime, &fData.ftLastWriteTime);
+                //bRet  = !!SetFileTime(hFile, NULL, NULL, &fData.ftLastWriteTime);
                 error = ::GetLastError();
                 if (!bRet)
                     Sleep(200);

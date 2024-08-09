@@ -165,6 +165,8 @@ void CPathWatcher::WorkerThread()
         // got resolved).
         if (!watchedPaths.empty())
         {
+            // Sets data to GetQueuedCompletionStatus() "successful" 
+            // values in case bCheckHandles is true.
             SetLastError(ERROR_SUCCESS);
             numBytes = 0;
             pdi      = nullptr;
@@ -175,11 +177,10 @@ void CPathWatcher::WorkerThread()
                                                            &lpOverlapped,
                                                            INFINITE))
             {
-                // Error retrieving changes
-                // Clear the list of watched objects and recreate that list
                 if (!m_bRunning)
                     return;
 
+                // Possibly error retrieving changes
                 lasterr = GetLastError();
 
 #ifdef _DEBUG
@@ -187,9 +188,61 @@ void CPathWatcher::WorkerThread()
                 {
                     _com_error comError(lasterr);
                     LPCTSTR    comErrorText = comError.ErrorMessage();
-                    CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": GetQueuedCompletionStatus failed (%s) on directory %s\n"), comErrorText, pdi->m_dirName.c_str());
+                    CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": GetQueuedCompletionStatus failed (%s) on directory %s\n"), comErrorText, pdi->m_dirPath.c_str());
                 }
 #endif
+                /*
+                * From https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-readdirectorychangesexw: 
+                * If the network redirector or the target file system does 
+                * not support this operation, the function fails with ERROR_INVALID_FUNCTION.
+                */
+                if ((m_hCompPort) && (lasterr == ERROR_INVALID_FUNCTION))
+                {
+                    if (pdi)
+                    {
+                        if (pdi->m_hDir.IsValid())
+                        {
+                            pdi->CloseDirectoryHandle();
+                        }
+                        CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": Device for %s does not support ReadDirectoryChangesW() - file change notification impossible\n"), pdi->m_dirName.c_str());
+                        CAutoWriteLock lockerW(m_guard);
+                        pdi->m_bNotSupported = true;
+                        // We do not erase this entry, we just mark it as "not supported". This
+                        // avoids constantly trying to open the handle and calling ReadDirectoryChangesW()
+                        // at each commit
+                        // watchedPaths.erase(pdi->m_dirName);
+                    }
+                    else
+                    {
+                        CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": A device does not support ReadDirectoryChangesW() - file change notification impossible\n"));
+                    }
+                    continue;
+                }
+                /*
+                * From https://stackoverflow.com/questions/14801950/getqueuedcompletionstatusex-readdirectorychangesw
+                * We should handle the ERROR_NOTIFY_ENUM_DIR error code (possibly STATUS_NOTIFY_ENUM_DIR too
+                * if there is indeed a bug in Windows).
+                */
+                if ((m_hCompPort) && (lasterr == ERROR_NOTIFY_ENUM_DIR))
+                {
+                    if (pdi)
+                    {
+                        CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": ERROR_NOTIFY_ENUM_DIR on %s\n"), pdi->m_dirName.c_str());
+                        //CAutoWriteLock lockerW(m_guard);
+                        //pdi->m_bNotSupported = true;
+                        // We do not erase this entry, we just mark it as "not supported". This
+                        // avoids constantly trying to open the handle and calling ReadDirectoryChangesW()
+                        // at each commit
+                        // watchedPaths.erase(pdi->m_dirName);
+                    }
+                    else
+                    {
+                        CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": ERROR_NOTIFY_ENUM_DIR on unknow path\n"));
+                    }
+                    assert(0);  // Need to confirm how to handle this case.
+                    continue;
+                }
+
                 // ERROR_INVALID_HANDLE returned on closing/closed handle 
                 // ERROR_OPERATION_ABORTED when CancelIo() is done
                 if ((m_hCompPort) && (lasterr != ERROR_SUCCESS) && (lasterr != ERROR_INVALID_HANDLE) && (lasterr != ERROR_OPERATION_ABORTED))
@@ -198,128 +251,148 @@ void CPathWatcher::WorkerThread()
                     // They will be re-created below.
                     ClearInfoMap();
                 }
-                CAutoReadLock locker(m_guard);
-                for (auto p = watchedPaths.cbegin(); p != watchedPaths.cend();)
                 {
-                    bool           bCreateIoCompletionPort = FALSE;
-                    auto           pDirInfoIter            = m_watchInfoMap.find(p->first);
-                    CDirWatchInfo* pDirInfo                = nullptr;
-                    if (pDirInfoIter != m_watchInfoMap.end())
+                    CAutoReadLock locker(m_guard);
+                    for (auto p = watchedPaths.cbegin(); p != watchedPaths.cend();)
                     {
-                        pDirInfo = pDirInfoIter->second;
-                    }
-                    if (pDirInfo != nullptr)
-                    {
-                        if (pDirInfo->m_hDir.IsValid())
+                        bool           bAddToIoCompletionPort = FALSE;
+                        auto           pDirInfoIter           = m_watchInfoMap.find(p->first);
+                        CDirWatchInfo* pDirInfo               = nullptr;
+                        if (pDirInfoIter != m_watchInfoMap.cend())
                         {
-                            // Confirm directory handle is still valid for Windows
-                            BY_HANDLE_FILE_INFORMATION FileInformation;
-                            if (GetFileInformationByHandle(pDirInfo->m_hDir, &FileInformation) == 0)
+                            pDirInfo = pDirInfoIter->second;
+                        }
+                        if (pDirInfo != nullptr)
+                        {
+                            if (pDirInfo->m_bNotSupported)
+                            {
+                                p++;
+                                continue;
+                            }
+                            if (pDirInfo->m_hDir.IsValid())
+                            {
+                                // Confirm directory handle is still valid for Windows
+                                BY_HANDLE_FILE_INFORMATION FileInformation;
+                                if (GetFileInformationByHandle(pDirInfo->m_hDir, &FileInformation) == 0)
+                                {
+#ifdef _DEBUG
+                                    {
+                                        _com_error comError(GetLastError());
+                                        LPCTSTR    comErrorText = comError.ErrorMessage();
+                                        CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": GetFileInformationByHandle on %s directory failed (%s) \n"), p->first.c_str(), comErrorText);
+                                    }
+#endif
+                                    pDirInfo->CloseDirectoryHandle();
+                                }
+                            }
+                        }
+                        if (pDirInfo == nullptr || pDirInfo->m_hDir == INVALID_HANDLE_VALUE)
+                        {
+                            CAutoFile hDir = CreateFile(p->first.c_str(),
+                                                        FILE_LIST_DIRECTORY,
+                                                        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                                        nullptr, // security attributes
+                                                        OPEN_EXISTING,
+                                                        FILE_FLAG_BACKUP_SEMANTICS | // required privileges: SE_BACKUP_NAME and SE_RESTORE_NAME.
+                                                            FILE_FLAG_OVERLAPPED,
+                                                        nullptr);
+                            if (!hDir)
                             {
 #ifdef _DEBUG
                                 {
                                     _com_error comError(GetLastError());
                                     LPCTSTR    comErrorText = comError.ErrorMessage();
-                                    CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": GetFileInformationByHandle on %s directory failed (%s) \n"), p->first.c_str(), comErrorText);
+                                    CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": CreateFile on %s directory failed (%s) \n"), p->first.c_str(), comErrorText);
                                 }
 #endif
-                                pDirInfo->CloseDirectoryHandle();
+                                // this could happen if a watched folder has been removed/renamed
+                                // m_hCompPort.CloseHandle();  m_hCompPort is still valid for the other dir handles
+                                CAutoWriteLock lockerW(m_guard);
+                                m_watchInfoMap.CloseDirHandle(p->first); // Should do nothing
+                                p = watchedPaths.erase(p);               // Get next p from erase() to avoid invalidating the iterator
+                                continue;
                             }
-                        }
-                    }
-                    if (pDirInfo == nullptr || pDirInfo->m_hDir == INVALID_HANDLE_VALUE)
-                    {
-                        CAutoFile hDir = CreateFile(p->first.c_str(),
-                                                    FILE_LIST_DIRECTORY,
-                                                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                                                    nullptr, // security attributes
-                                                    OPEN_EXISTING,
-                                                    FILE_FLAG_BACKUP_SEMANTICS | // required privileges: SE_BACKUP_NAME and SE_RESTORE_NAME.
-                                                        FILE_FLAG_OVERLAPPED,
-                                                    nullptr);
-                        if (!hDir)
-                        {
-#ifdef _DEBUG
+                            else
                             {
-                                _com_error comError(GetLastError());
-                                LPCTSTR    comErrorText = comError.ErrorMessage();
-                                CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": CreateFile on %s directory failed (%s) \n"), p->first.c_str(), comErrorText);
+                                bAddToIoCompletionPort = TRUE;
                             }
-#endif
-                            // this could happen if a watched folder has been removed/renamed
-                            // m_hCompPort.CloseHandle();  m_hCompPort is still valid for the other dir handles
-                            CAutoWriteLock lockerW(m_guard);
-                            m_watchInfoMap.CloseDirHandle(p->first); // Should do nothing
-                            p = watchedPaths.erase(p);               // Get next p from erase() to avoid invalidating the iterator
-                            continue;
-                        }
-                        else
-                        {
-                            bCreateIoCompletionPort = TRUE;
-                        }
-                        if (pDirInfo == nullptr)
-                        {
-                            pDirInfo = new CDirWatchInfo(std::move(hDir), p->first);
-                            // auto upDirInfo = std::make_unique<CDirWatchInfo>(std::move(hDir), p->c_str());
-                            // pDirInfo       = upDirInfo.release();
-                        }
-                        else
-                        {
-                            pDirInfo->m_hDir = std::move(hDir);
-                        }
-                    } // pDirInfo == nullptr || pDirInfo->m_hDir == INVALID_HANDLE_VALUE
+                            if (pDirInfo == nullptr)
+                            {
+                                pDirInfo = new CDirWatchInfo(std::move(hDir), p->first);
+                                // auto upDirInfo = std::make_unique<CDirWatchInfo>(std::move(hDir), p->c_str());
+                                // pDirInfo       = upDirInfo.release();
+                            }
+                            else
+                            {
+                                pDirInfo->m_hDir = std::move(hDir);
+                            }
+                        } // pDirInfo == nullptr || pDirInfo->m_hDir == INVALID_HANDLE_VALUE
 
-                    {
-                        CAutoWriteLock lockerW(m_guard);
-                        m_watchInfoMap[p->first] = pDirInfo;
-                    }
-
-                    if (bCreateIoCompletionPort)
-                    {
-                        m_hCompPort = CreateIoCompletionPort(pDirInfo->m_hDir, m_hCompPort, reinterpret_cast<ULONG_PTR>(pDirInfo), 0);
-                        if (m_hCompPort == NULL)
                         {
-#ifdef _DEBUG
-                            {
-                                _com_error comError(GetLastError());
-                                LPCTSTR    comErrorText = comError.ErrorMessage();
-                                CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": CreateIoCompletionPort on %s directory failed (%s) \n"), p->first.c_str(), comErrorText);
-                            }
-#endif
                             CAutoWriteLock lockerW(m_guard);
-                            // ClearInfoMap();
-                            m_watchInfoMap.CloseDirHandle(p->first.c_str());
-                            p = watchedPaths.erase(p); // Get next p from erase() to avoid invalidating the iterator
-                            continue;
+                            m_watchInfoMap[p->first] = pDirInfo;
                         }
-                        SecureZeroMemory(pDirInfo->m_buffer, sizeof(pDirInfo->m_buffer));
-                        SecureZeroMemory(&pDirInfo->m_overlapped, sizeof(pDirInfo->m_overlapped));
-                        if (!ReadDirectoryChangesExW(pDirInfo->m_hDir,
-                                                   pDirInfo->m_buffer,
-                                                   READ_DIR_CHANGE_BUFFER_SIZE,
-                                                   TRUE,
-                                                   FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE,
-                                                   &numBytes, // not used
-                                                   &pDirInfo->m_overlapped,
-                                                   nullptr,   // no completion routine!
-                                                   ReadDirectoryNotifyExtendedInformation)) 
+
+                        if (bAddToIoCompletionPort)
                         {
 #ifdef _DEBUG
                             {
-                                _com_error comError(GetLastError());
-                                LPCTSTR    comErrorText = comError.ErrorMessage();
-                                CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": ReadDirectoryChangesExW on %s directory failed (%s) \n"), p->first.c_str(), comErrorText);
+                                WCHAR FileSystemNameBuffer[60];
+                                FileSystemNameBuffer[(sizeof(FileSystemNameBuffer) / sizeof(sizeof(FileSystemNameBuffer[0]))) - 1] = 0;
+                                if (GetVolumeInformationByHandleW(pDirInfo->m_hDir, NULL, 0, NULL, NULL, NULL, FileSystemNameBuffer, sizeof(FileSystemNameBuffer) - 1) != 0)
+                                    CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": Directory %s on file system \"%s\"\n"), p->first.c_str(), FileSystemNameBuffer);
                             }
 #endif
-                            CAutoWriteLock lockerW(m_guard);
-                            m_watchInfoMap.CloseDirHandle(p->first.c_str());
-                            p = watchedPaths.erase(p); // Get next p from erase() to avoid invalidating the iterator
-                            continue;
-                        } // !ReadDirectoryChangesExW()
-                        CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": watching path %s\n"), p->first.c_str());
-                    }
-                    p++;
-                } // for all watched paths
+                            m_hCompPort = CreateIoCompletionPort(pDirInfo->m_hDir, m_hCompPort, reinterpret_cast<ULONG_PTR>(pDirInfo), 0);
+                            if (m_hCompPort == NULL)
+                            {
+#ifdef _DEBUG
+                                {
+                                    _com_error comError(GetLastError());
+                                    LPCTSTR    comErrorText = comError.ErrorMessage();
+                                    CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": CreateIoCompletionPort on %s directory failed (%s) \n"), p->first.c_str(), comErrorText);
+                                }
+#endif
+                                CAutoWriteLock lockerW(m_guard);
+                                // ClearInfoMap();
+                                m_watchInfoMap.CloseDirHandle(p->first.c_str());
+                                p = watchedPaths.erase(p); // Get next p from erase() to avoid invalidating the iterator
+                                continue;
+                            }
+                            SecureZeroMemory(pDirInfo->m_buffer, sizeof(pDirInfo->m_buffer));
+                            SecureZeroMemory(&pDirInfo->m_overlapped, sizeof(pDirInfo->m_overlapped));
+                            if (!ReadDirectoryChangesW(pDirInfo->m_hDir,
+                                                       pDirInfo->m_buffer,
+                                                       READ_DIR_CHANGE_BUFFER_SIZE,
+                                                       TRUE,
+                                                       FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE,
+                                                       &numBytes, // not used
+                                                       &pDirInfo->m_overlapped,
+                                                       nullptr // no completion routine!
+                                                               /*,ReadDirectoryNotifyExtendedInformation
+                                                                *  Extra parameter for the "Ex" function ReadDirectoryChangesExW
+                                                                *  but it only supported on NTFS
+                                                                */
+                                                       ))
+                            {
+#ifdef _DEBUG
+                                {
+                                    _com_error comError(GetLastError());
+                                    LPCTSTR    comErrorText = comError.ErrorMessage();
+                                    CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": ReadDirectoryChanges on %s directory failed (%s) \n"), p->first.c_str(), comErrorText);
+                                }
+#endif
+                                CAutoWriteLock lockerW(m_guard);
+                                m_watchInfoMap.CloseDirHandle(p->first.c_str());
+                                p                         = watchedPaths.erase(p); // Get next p from erase() to avoid invalidating the iterator
+                                pDirInfo->m_bNotSupported = true;
+                                continue;
+                            } // !ReadDirectoryChangesW()
+                            CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": watching path %s\n"), p->first.c_str());
+                        } // if (bAddToIoCompletionPort)
+                        p++;
+                    } // for all watched paths
+                }
                 bCheckHandles = false;
             }
             else
@@ -338,6 +411,7 @@ void CPathWatcher::WorkerThread()
                         case FREE_PDI:
                         {
                             std::wstring* upDirName = reinterpret_cast<std::wstring*>(pdi);
+                            CAutoWriteLock locker(m_guard);
                             m_watchInfoMap.CloseDirHandle(upDirName->c_str());
                             delete upDirName;
                         }
@@ -348,18 +422,20 @@ void CPathWatcher::WorkerThread()
                     }
                     assert(false);
                 }
-                // NOTE: the longer this code takes to execute until ReadDirectoryChangesExW
+                // NOTE: the longer this code takes to execute until ReadDirectoryChangesW
                 // is called again, the higher the chance that we miss some
                 // changes in the file system!
                 if (pdi)
                 {
-                    PFILE_NOTIFY_EXTENDED_INFORMATION pnotify = reinterpret_cast<PFILE_NOTIFY_EXTENDED_INFORMATION>(pdi->m_buffer);
+                    // PFILE_NOTIFY_EXTENDED_INFORMATION gives benefit of knowing if notification is for a directory,
+                    // but it is only supported for NTFS file systems.
+                    PFILE_NOTIFY_INFORMATION pnotify = reinterpret_cast<PFILE_NOTIFY_INFORMATION>(pdi->m_buffer);
                     DWORD                             nOffset = 0;
                     if (numBytes != 0)
                     {
                         do
                         {
-                            pnotify           = reinterpret_cast<PFILE_NOTIFY_EXTENDED_INFORMATION>(reinterpret_cast<LPBYTE>(pnotify) + nOffset);
+                            pnotify           = reinterpret_cast<PFILE_NOTIFY_INFORMATION>(reinterpret_cast<LPBYTE>(pnotify) + nOffset);
                             size_t bufferSize = pdi->m_dirPath.size() + (pnotify->FileNameLength / sizeof(pnotify->FileName[0])) + 1;
                             auto   buf        = std::make_unique<wchar_t[]>(bufferSize);
                             nOffset           = pnotify->NextEntryOffset;
@@ -406,9 +482,12 @@ void CPathWatcher::WorkerThread()
                                     swprintf_s(szActionName, (sizeof(szActionName) / sizeof(szActionName[0])) - 1, L"unknown action %d", action);
                                 }
                                 CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": change notification for %s (%s)\n"), buf.get(), szActionName);
+                                if (0 == _wcsicmp(buf.get(), L"\\\\?\\C:\\Users\\Daniel\\source\\repos\\dansyl1\\CryptSync\\.vs\\CryptSync\\FileContentIndex\\4b128779-5982-4733-a83d-356ffc1e6545.vsidx"))
+                                    DebugBreak();
                             }
 #endif
 
+#ifdef SUPPORT_READDIRECTORYCHANGESEXW
                             // We don't care about changes to directories, unless one is removed. An addition will be handled
                             // by the notification for files added/modified under it. A directory modification is irrelevant
                             // to cryptsync. A directory rename could have a specific handling, renaming the corresponding
@@ -421,6 +500,12 @@ void CPathWatcher::WorkerThread()
                                     m_changedPaths.insert(std::wstring(buf.get()));
                                 }
                             }
+#else
+                            {
+                                CAutoWriteLock locker(m_guard);
+                                m_changedPaths.insert(std::wstring(buf.get()));
+                            }
+#endif
                         } while (nOffset);
                     }
                     else
@@ -440,7 +525,7 @@ void CPathWatcher::WorkerThread()
                     }
                     SecureZeroMemory(pdi->m_buffer, sizeof(pdi->m_buffer));
                     SecureZeroMemory(&pdi->m_overlapped, sizeof(pdi->m_overlapped));
-                    if (!ReadDirectoryChangesExW(pdi->m_hDir,
+                    if (!ReadDirectoryChangesW(pdi->m_hDir,
                                                pdi->m_buffer,
                                                READ_DIR_CHANGE_BUFFER_SIZE,
                                                TRUE,
@@ -452,10 +537,13 @@ void CPathWatcher::WorkerThread()
                                                */
                                                &numBytes, // not used
                                                &pdi->m_overlapped, 
-                                               nullptr,   // no completion routine!
-                                               ReadDirectoryNotifyExtendedInformation)) 
+                                               nullptr // no completion routine!
+                                               /*,ReadDirectoryNotifyExtendedInformation
+                                                *  Extra parameter for the "Ex" function ReadDirectoryChangesExW
+                                                *  but it only supported on NTFS
+                                               */ ))
                     {
-                        // Since the call to ReadDirectoryChangesExW failed, just
+                        // Since the call to ReadDirectoryChangesW failed, just
                         // wait a while. We don't want to have this thread
                         // running using 100% CPU if something goes completely
                         // wrong.
@@ -463,13 +551,14 @@ void CPathWatcher::WorkerThread()
                         {
                             _com_error comError(GetLastError());
                             LPCTSTR    comErrorText = comError.ErrorMessage();
-                            CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": ReadDirectoryChangesExW failed (%s) for watched folder \"%s\"\n"), comErrorText, pdi->m_dirPath.c_str());
+                            CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": ReadDirectoryChangesW failed (%s) for watched folder \"%s\"\n"), comErrorText, pdi->m_dirPath.c_str());
                         }
 #endif
                         pdi->CloseDirectoryHandle();
-
+                        // Set flag so that directory handle will be re-open on next loop and ReadDirectory done 
+                        bCheckHandles = true;
                         Sleep(200);
-                    } // !ReadDirectoryChangesExW()
+                    } // !ReadDirectoryChangesW()
                 } // if (pdi)
             }
         } // if (!watchedPaths.empty())
@@ -510,7 +599,7 @@ bool CPathWatcher::VerifywatchInfoMap()
         CDirWatchInfo* pDirInfo = nullptr;
         bOkToClearInfoMap       = true;
 
-        for (auto I = m_watchInfoMap.begin(); I != m_watchInfoMap.end(); I++)
+        for (auto I = m_watchInfoMap.cbegin(); I != m_watchInfoMap.cend(); I++)
         {
             pDirInfo = I->second;
             if (pDirInfo != nullptr && pDirInfo->m_hDir.IsValid())
@@ -520,28 +609,15 @@ bool CPathWatcher::VerifywatchInfoMap()
                 {
                     // not a path we should be watching
                     // Currently watching it, CloseDirectoryHandle will call CancelIo and trigger
-                    // GetQueuedCompletionStatus() to return if needed.
+                    // GetQueuedCompletionStatus() to complete, if pending.
                     pDirInfo->CloseDirectoryHandle();
-#if 0
-                    if (m_hCompPort)
-                    {
-                        // Currently watching it, CloseDirectoryHandle will call CancelIo and trigger 
-                        // GetQueuedCompletionStatus() to return 
-                        pDirInfo->CloseDirectoryHandle();
-                        //auto dirName = std::make_unique<std::wstring>(pDirInfo->m_dirName);
-                        //PostQueuedCompletionStatus(m_hCompPort, (DWORD)FREE_PDI, reinterpret_cast<ULONG_PTR>(dirName.release()), nullptr);
-                    }
-                    else
-                    {
-                        pDirInfo->CloseDirectoryHandle();
-                        //I = m_watchInfoMap.CloseDirHandle(I); // Similarly to .erase(), return next iterator
-                    }
-#endif
                 }
                 else
                 {
                     // This is a directory we continue watching, InfoMap still needed
                     bOkToClearInfoMap = false;
+                    // continue, and not break so we can check if there are directories we shoud no longer monitor
+                    continue;  
                 }
             } // if (pDirInfo != nullptr && pDirInfo->m_hDir.IsValid())
         }     // for
@@ -584,6 +660,7 @@ CPathWatcher::CDirWatchInfo::CDirWatchInfo(CAutoFile&& hDir, const std::wstring&
     m_dirPath = m_dirName;
     if (m_dirPath.at(m_dirPath.size() - 1) != '\\')
         m_dirPath += _T("\\");
+    m_bNotSupported = false;
 }
 
 CPathWatcher::CDirWatchInfo::~CDirWatchInfo()
@@ -648,7 +725,7 @@ CPathWatcher::CWatchInfoMap::iterator CPathWatcher::CWatchInfoMap::CloseDirHandl
     {
         CPathWatcher::CDirWatchInfo* info = it->second;
         // info may still be used by GetQueuedCompletionStatus() so
-        // we just close its m_hDir.
+        // we just close its m_hDir. m_bNotSupported, for example.
         // it->second                        = nullptr;
         // delete info;
         info->CloseDirectoryHandle();
@@ -666,8 +743,8 @@ void CPathWatcher::CWatchInfoMap::CloseDirHandle(const std::wstring p)
         if (I != end())
         {
             CPathWatcher::CDirWatchInfo* info = I->second;
-            // info may still be used by GetQueuedCompletionStatus() so
-            // we just close its m_hDir.
+            // info still be used by GetQueuedCompletionStatus() so
+            // we just close its m_hDir. m_bNotSupported, for example.
             // I->second                         = nullptr;
             // delete info;
             info->CloseDirectoryHandle();
