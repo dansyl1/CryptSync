@@ -78,7 +78,7 @@ public:
     void                           DecryptOnly(bool b) { m_decryptOnly = b; }
     bool                           IsRunning() const { return m_bRunning != 0; }
 
-    // public only for tests
+    // puclic only for tests
     static std::wstring            GetDecryptedFilename(const std::wstring& filename, const std::wstring& password, bool encryptName, bool newEncryption, bool use7Z, bool useGpg);
     static std::wstring            GetEncryptedFilename(const std::wstring& filename, const std::wstring& password, bool encryptName, bool newEncryption, bool use7Z, bool useGpg);
 
@@ -111,6 +111,5 @@ private:
     PairData                                   m_currentPath;
     std::map<std::wstring, SyncOp>             m_failures;
     std::set<std::wstring>                     m_notifyIgnores;
-    bool                                       m_bClearNotifyIgnores;
     bool                                       m_decryptOnly;
 };
