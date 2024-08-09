@@ -277,11 +277,14 @@ LRESULT CALLBACK CTrayWindow::WinMsgHandler(HWND hwnd, UINT uMsg, WPARAM wParam,
                     * if Options dialog is open, it will become unresponsive until all SyncFile() 
                     * below are done (same thing for TrayWindow icon). 
                     * Options? 
-                    * Perhaps temporarily set TIMER_DETECTCHANGES to a small (200 ms?) value
+                    * 1) Perhaps temporarily set TIMER_DETECTCHANGES to a small (200 ms?) value
                     * and keep coming back here until m_lastChangedPaths.empty() is true.
                     * The "for (auto lastChangedPath" loop below would be obsolete and 
                     * path re-insertion should be postponed until m_lastChangedPaths.empty,
                     * to avoid doing very 200 ms.
+                    * 2) Start a thread to process all the pending changes.
+                    * *
+                    * *** Also, cconsider defering program exit until the pending changes are processed.
                     */
                     if (!m_lastChangedPaths.empty())
                     {
