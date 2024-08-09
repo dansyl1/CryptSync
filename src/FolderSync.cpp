@@ -47,6 +47,7 @@ CFolderSync::CFolderSync()
     , m_progressTotal(1)
     , m_bRunning(FALSE)
     , m_decryptOnly(false)
+    , m_bClearNotifyIgnores(true)
 {
     static const wchar_t *gnuPGInstallPaths[] = {
         L"%ProgramFiles%\\GNU\\GnuPG\\Pub\\gpg.exe",
@@ -634,6 +635,13 @@ int CFolderSync::SyncFolder(const PairData& pt)
                     std::wstring cryptPath = CPathUtils::AdjustForMaxPath(CPathUtils::Append(pt.m_cryptPath, it->first));
                     std::wstring origPath  = CPathUtils::AdjustForMaxPath(CPathUtils::Append(pt.m_origPath, it->first));
                     CCircularLog::Instance()(_T("INFO:    copy file %s to %s"), origPath.c_str(), cryptPath.c_str());
+                    if (pt.m_syncDir == BothWays)
+                    {
+                        // file does not exist in the encrypted folder, we can ignore
+                        // its creation.
+                        CAutoWriteLock nLocker(m_notingGuard);
+                        m_notifyIgnores.insert(CPathUtils::Append(pt.m_cryptPath, it->first));
+                    }
                     bool bCopyFileResult = CopyFile(origPath.c_str(), cryptPath.c_str(), FALSE);
                     if (!bCopyFileResult)
                     {
@@ -652,8 +660,15 @@ int CFolderSync::SyncFolder(const PairData& pt)
                 }
                 else
                 {
-                    std::wstring cryptPath = CPathUtils::AdjustForMaxPath(CPathUtils::Append(pt.m_cryptPath, GetEncryptedFilename(it->first, pt.m_password, pt.m_encNames, pt.m_encNamesNew, pt.m_use7Z, pt.m_useGpg)));
-                    std::wstring origPath  = CPathUtils::AdjustForMaxPath(CPathUtils::Append(pt.m_origPath, it->first));
+                    std::wstring cryptPath = CPathUtils::Append(pt.m_cryptPath, GetEncryptedFilename(it->first, pt.m_password, pt.m_encNames, pt.m_encNamesNew, pt.m_use7Z, pt.m_useGpg));
+                    std::wstring origPath  = CPathUtils::Append(pt.m_origPath, it->first);
+                    if (pt.m_syncDir == BothWays)
+                    {
+                        // file does not exist in the encrypted folder, we can ignore
+                        // its creation.
+                        CAutoWriteLock nLocker(m_notingGuard);
+                        m_notifyIgnores.insert(cryptPath);
+                    }
                     if (!EncryptFile(origPath, cryptPath, pt.m_password, it->second, pt.m_useGpg, bCryptOnly, pt.m_compressSize, pt.m_ResetOriginalArchAttr))
                         retVal |= ErrorCrypt;
                 }
