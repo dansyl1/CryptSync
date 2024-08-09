@@ -47,7 +47,6 @@ CFolderSync::CFolderSync()
     , m_progressTotal(1)
     , m_bRunning(FALSE)
     , m_decryptOnly(false)
-    , m_bClearNotifyIgnores(true)
 {
     static const wchar_t *gnuPGInstallPaths[] = {
         L"%ProgramFiles%\\GNU\\GnuPG\\Pub\\gpg.exe",
@@ -113,6 +112,11 @@ void CFolderSync::SetPairs(const PairVector& pv)
 {
     CAutoWriteLock locker(m_guard);
     m_pairs = pv;
+    for (auto it = m_pairs.begin(); it != m_pairs.end(); ++it)
+    {
+        it->m_cryptPath = CPathUtils::AdjustForMaxPath(it->m_cryptPath);
+        it->m_origPath  = CPathUtils::AdjustForMaxPath(it->m_origPath);
+    }
 }
 
 void CFolderSync::SyncFolders(const PairVector& pv, HWND hWnd)
@@ -139,7 +143,7 @@ void CFolderSync::SyncFolders(const PairVector& pv, HWND hWnd)
         Stop();
     }
     CAutoWriteLock locker(m_guard);
-    m_pairs               = pv;
+    SetPairs(pv);
     m_parentWnd           = hWnd;
     unsigned int threadId = 0;
     InterlockedExchange(&m_bRunning, TRUE);
@@ -149,7 +153,7 @@ void CFolderSync::SyncFolders(const PairVector& pv, HWND hWnd)
 int CFolderSync::SyncFoldersWait(const PairVector& pv, HWND hWnd)
 {
     CAutoWriteLock locker(m_guard);
-    m_pairs     = pv;
+    SetPairs(pv);
     m_parentWnd = hWnd;
     InterlockedExchange(&m_bRunning, TRUE);
     return SyncFolderThread();
@@ -305,9 +309,7 @@ void CFolderSync::SyncFile(const std::wstring& plainPath, const PairData& pt)
         }
         crypt = path;
     }
-    crypt                                   = CPathUtils::AdjustForMaxPath(crypt);
-    orig                                    = CPathUtils::AdjustForMaxPath(orig);
-    path                                    = CPathUtils::AdjustForMaxPath(plainPath);
+    path                                    = plainPath;
 
     WIN32_FILE_ATTRIBUTE_DATA fDataOrig     = {};
     WIN32_FILE_ATTRIBUTE_DATA fDdataCrypt   = {};
@@ -547,7 +549,7 @@ int CFolderSync::SyncFolder(const PairData& pt)
     if (m_trayWnd)
         PostMessage(m_trayWnd, WM_PROGRESS, m_progress, m_progressTotal);
     {
-        CAutoFile hTest = CreateFile(CPathUtils::AdjustForMaxPath(pt.m_origPath).c_str(), GENERIC_READ, FILE_SHARE_DELETE | FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+        CAutoFile hTest = CreateFile(pt.m_origPath.c_str(), GENERIC_READ, FILE_SHARE_DELETE | FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
         if (!hTest)
         {
             CCircularLog::Instance()(L"ERROR:   error accessing path \"%s\", skipped", pt.m_origPath.c_str());
@@ -555,7 +557,7 @@ int CFolderSync::SyncFolder(const PairData& pt)
         }
     }
     {
-        CAutoFile hTest = CreateFile(CPathUtils::AdjustForMaxPath(pt.m_cryptPath).c_str(), GENERIC_READ, FILE_SHARE_DELETE | FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+        CAutoFile hTest = CreateFile(pt.m_cryptPath.c_str(), GENERIC_READ, FILE_SHARE_DELETE | FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
         if (!hTest)
         {
             CCircularLog::Instance()(L"ERROR:   error accessing path \"%s\", skipped", pt.m_cryptPath.c_str());
@@ -632,8 +634,8 @@ int CFolderSync::SyncFolder(const PairData& pt)
                 CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": file %s does not exist in encrypted folder\n"), it->first.c_str());
                 if (bCopyOnly)
                 {
-                    std::wstring cryptPath = CPathUtils::AdjustForMaxPath(CPathUtils::Append(pt.m_cryptPath, it->first));
-                    std::wstring origPath  = CPathUtils::AdjustForMaxPath(CPathUtils::Append(pt.m_origPath, it->first));
+                    std::wstring cryptPath = CPathUtils::Append(pt.m_cryptPath, it->first);
+                    std::wstring origPath  = CPathUtils::Append(pt.m_origPath, it->first);
                     CCircularLog::Instance()(_T("INFO:    copy file %s to %s"), origPath.c_str(), cryptPath.c_str());
                     if (pt.m_syncDir == BothWays)
                     {
@@ -760,8 +762,8 @@ int CFolderSync::SyncFolder(const PairData& pt)
                     CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": file %s is older than its encrypted partner\n"), it->first.c_str());
                     if (bCopyOnly)
                     {
-                        std::wstring cryptPath = CPathUtils::AdjustForMaxPath(CPathUtils::Append(pt.m_cryptPath, it->first));
-                        std::wstring origPath  = CPathUtils::AdjustForMaxPath(CPathUtils::Append(pt.m_origPath, it->first));
+                        std::wstring cryptPath = CPathUtils::Append(pt.m_cryptPath, it->first);
+                        std::wstring origPath  = CPathUtils::Append(pt.m_origPath, it->first);
                         CCircularLog::Instance()(_T("INFO:    copy file %s to %s"), cryptPath.c_str(), origPath.c_str());
                         if (!CopyFile(cryptPath.c_str(), origPath.c_str(), FALSE))
                         {
@@ -774,8 +776,8 @@ int CFolderSync::SyncFolder(const PairData& pt)
                     }
                     else
                     {
-                        std::wstring cryptPath = CPathUtils::AdjustForMaxPath(CPathUtils::Append(pt.m_cryptPath, GetEncryptedFilename(it->first, pt.m_password, pt.m_encNames, pt.m_encNamesNew, pt.m_use7Z, pt.m_useGpg)));
-                        std::wstring origPath  = CPathUtils::AdjustForMaxPath(CPathUtils::Append(pt.m_origPath, it->first));
+                        std::wstring cryptPath = CPathUtils::Append(pt.m_cryptPath, GetEncryptedFilename(it->first, pt.m_password, pt.m_encNames, pt.m_encNamesNew, pt.m_use7Z, pt.m_useGpg));
+                        std::wstring origPath  = CPathUtils::Append(pt.m_origPath, it->first);
                         if (!DecryptFile(origPath, cryptPath, pt.m_password, cryptIt->second, pt.m_useGpg))
                             retVal |= ErrorCrypt;
                     }
@@ -793,8 +795,8 @@ int CFolderSync::SyncFolder(const PairData& pt)
                     CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": file %s is newer than its encrypted partner\n"), it->first.c_str());
                     if (bCopyOnly)
                     {
-                        std::wstring cryptPath = CPathUtils::AdjustForMaxPath(CPathUtils::Append(pt.m_cryptPath, it->first));
-                        std::wstring origPath  = CPathUtils::AdjustForMaxPath(CPathUtils::Append(pt.m_origPath, it->first));
+                        std::wstring cryptPath = CPathUtils::Append(pt.m_cryptPath, it->first);
+                        std::wstring origPath  = CPathUtils::Append(pt.m_origPath, it->first);
                         CCircularLog::Instance()(_T("INFO:    copy file %s to %s"), origPath.c_str(), cryptPath.c_str());
                         bool bCopyFileResult = CopyFile(origPath.c_str(), cryptPath.c_str(), FALSE);
                         if (!bCopyFileResult)
@@ -814,8 +816,8 @@ int CFolderSync::SyncFolder(const PairData& pt)
                     }
                     else
                     {
-                        std::wstring cryptPath = CPathUtils::AdjustForMaxPath(CPathUtils::Append(pt.m_cryptPath, GetEncryptedFilename(it->first, pt.m_password, pt.m_encNames, pt.m_encNamesNew, pt.m_use7Z, pt.m_useGpg)));
-                        std::wstring origPath  = CPathUtils::AdjustForMaxPath(CPathUtils::Append(pt.m_origPath, it->first));
+                        std::wstring cryptPath = CPathUtils::Append(pt.m_cryptPath, GetEncryptedFilename(it->first, pt.m_password, pt.m_encNames, pt.m_encNamesNew, pt.m_use7Z, pt.m_useGpg));
+                        std::wstring origPath  = CPathUtils::Append(pt.m_origPath, it->first);
                         if (!EncryptFile(origPath, cryptPath, pt.m_password, it->second, pt.m_useGpg, bCryptOnly, pt.m_compressSize, pt.m_ResetOriginalArchAttr))
                             retVal |= ErrorCrypt;
                     }
@@ -829,7 +831,7 @@ int CFolderSync::SyncFolder(const PairData& pt)
                 {
                     if (pt.m_ResetOriginalArchAttr)
                     {
-                        std::wstring origPath = CPathUtils::AdjustForMaxPath(CPathUtils::Append(pt.m_origPath, it->first));
+                        std::wstring origPath = CPathUtils::Append(pt.m_origPath, it->first);
 
                         // Clear archive attibute
                         AdjustFileAttributes(origPath.c_str(), FILE_ATTRIBUTE_ARCHIVE, 0);
@@ -894,8 +896,8 @@ int CFolderSync::SyncFolder(const PairData& pt)
             }
             else if (bCopyOnly && (origFileList.empty() || (pt.m_syncDir == BothWays) || (pt.m_syncDir == DstToSrc)))
             {
-                std::wstring cryptPath = CPathUtils::AdjustForMaxPath(CPathUtils::Append(pt.m_cryptPath, it->first));
-                std::wstring origPath  = CPathUtils::AdjustForMaxPath(CPathUtils::Append(pt.m_origPath, it->first));
+                std::wstring cryptPath = CPathUtils::Append(pt.m_cryptPath, it->first);
+                std::wstring origPath  = CPathUtils::Append(pt.m_origPath, it->first);
                 CCircularLog::Instance()(_T("INFO:    copy file %s to %s"), cryptPath.c_str(), origPath.c_str());
                 // copy the file
                 if (!CopyFile(cryptPath.c_str(), origPath.c_str(), FALSE))
@@ -921,8 +923,8 @@ int CFolderSync::SyncFolder(const PairData& pt)
             {
                 // decrypt the file
                 CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": decrypt file %s to %s\n"), it->first.c_str(), pt.m_origPath.c_str());
-                std::wstring cryptPath = CPathUtils::AdjustForMaxPath(CPathUtils::Append(pt.m_cryptPath, it->second.fileRelPath));
-                std::wstring origPath  = CPathUtils::AdjustForMaxPath(CPathUtils::Append(pt.m_origPath, it->first));
+                std::wstring cryptPath = CPathUtils::Append(pt.m_cryptPath, it->second.fileRelPath);
+                std::wstring origPath  = CPathUtils::Append(pt.m_origPath, it->first);
                 if (!DecryptFile(origPath, cryptPath, pt.m_password, it->second, pt.m_useGpg))
                 {
                     retVal |= ErrorCrypt;
@@ -951,7 +953,6 @@ std::map<std::wstring, FileData, ci_lessW> CFolderSync::GetFileList(bool orig, c
     std::wstring enumpath = path;
     if ((enumpath.size() == 2) && (enumpath[1] == ':'))
         enumpath += L"\\";
-    enumpath = CPathUtils::AdjustForMaxPath(enumpath);
     CDirFileEnum                               enumerator(enumpath);
 
     std::map<std::wstring, FileData, ci_lessW> fileList;
