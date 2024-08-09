@@ -367,7 +367,7 @@ LRESULT CALLBACK CTrayWindow::WinMsgHandler(HWND hwnd, UINT uMsg, WPARAM wParam,
 
                                     if (m_folderSyncer.SyncFile(*lastChangedPath))
                                     {
-                                        CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": successfully synced %s\n"), lastChangedPath->c_str());
+                                        CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": successfully synced %s (TIMER_FULLSCAN)\n"), lastChangedPath->c_str());
                                         lastChangedPath = m_lastChangedPaths.erase(lastChangedPath);
                                     }
                                     else
