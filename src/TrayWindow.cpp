@@ -503,6 +503,10 @@ LRESULT CTrayWindow::DoCommand(int id)
             dlg.SetFailures(m_folderSyncer.GetFailures());
             INT_PTR ret           = dlg.DoModal(hResource, IDD_OPTIONS, nullptr);
             m_bOptionsDialogShown = false;
+            // SyncFolders() no longer stops a background task when another.
+            // background task is requested by SyncFolders(). We stop it
+            // directly so next run uses new parameters.
+            m_folderSyncer.Stop();
             if ((ret == IDOK) || (ret == IDCANCEL))
             {
                 // SyncFolders() no longer stops a background task when another. 
@@ -516,7 +520,6 @@ LRESULT CTrayWindow::DoCommand(int id)
                     m_folderSyncer.SetPairs(g_pairs);
                 // m_watcher.ClearPaths();
 
-                // Path removal need only be done after the Options dialog is displayed
                 for (const auto& pair : g_pairs)
                 {
                     if (pair.m_enabled)
