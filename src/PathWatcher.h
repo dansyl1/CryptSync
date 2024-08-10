@@ -114,11 +114,6 @@ private:
 #define ALLOC_PDI ((DWORD)-2L)
 #define STOPPING  ((DWORD)-3L)
 
-    // std::set<std::wstring> watchedPaths; ///< list of watched paths.
-    // v list of watched paths after CPathUtils::AdjustForMaxPath is done
-    std::map<std::wstring, long long> watchedPaths; 
-    std::map<std::wstring, long long> uncommittedWatchedPaths;
-
     /**
      * Helper class: provides information about watched directories.
      */
@@ -133,7 +128,7 @@ private:
         CDirWatchInfo(CAutoFile&& hDir, const std::wstring& directoryName);
         ~CDirWatchInfo();
 
-        bool CloseDirectoryHandle();
+        bool CloseDirectoryHandle();    // public, within CPathWatcher, no lock required
 
         CAutoFile    m_hDir;                                ///< handle to the directory that we're watching
         std::wstring m_dirName;                             ///< the directory that we're watching
@@ -170,9 +165,15 @@ private:
     };
 
     bool                             VerifywatchInfoMap();
+
+    // std::set<std::wstring> watchedPaths; ///< list of watched paths.
+    // v list of watched paths after CPathUtils::AdjustForMaxPath is done
+    std::map<std::wstring, long long> watchedPaths; 
+    std::map<std::wstring, long long> uncommittedWatchedPaths;
+
     CWatchInfoMap                    m_watchInfoMap;
 
     std::set<std::wstring>           m_changedPaths;
+    UINT                             m_NotifMsg;
     HWND                             m_hCaller;
-    UINT                             m_NotifMsg = 0;
 };
