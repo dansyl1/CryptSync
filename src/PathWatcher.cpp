@@ -30,6 +30,8 @@
 CPathWatcher::CPathWatcher()
     : m_hCompPort(nullptr)
     , m_bRunning(TRUE)
+    , m_NotifMsg(0)
+    , m_hCaller(HWND_BROADCAST)  // A valid "invalid" value
 {
     // enable the required privileges for this process
 
@@ -123,9 +125,11 @@ bool CPathWatcher::AddPath(const std::wstring& path, long long id)
 
 void CPathWatcher::CommitPathChanges()
 {
-    CAutoWriteLock locker(m_guard);
-    watchedPaths = uncommittedWatchedPaths;
-    uncommittedWatchedPaths.clear();
+    {
+        CAutoWriteLock locker(m_guard);
+        watchedPaths = uncommittedWatchedPaths;
+        uncommittedWatchedPaths.clear();
+    }
     if (m_hCompPort)
     {
         if (PostQueuedCompletionStatus(m_hCompPort, ALLOC_PDI, NULL, nullptr) == 0)
@@ -307,10 +311,12 @@ void CPathWatcher::WorkerThread()
 #endif
                                 // this could happen if a watched folder has been removed/renamed
                                 // m_hCompPort.CloseHandle();  m_hCompPort is still valid for the other dir handles
-                                CAutoWriteLock lockerW(m_guard);
-                                m_watchInfoMap.CloseDirHandle(p->first); // Should do nothing
-                                p = watchedPaths.erase(p);               // Get next p from erase() to avoid invalidating the iterator
-                                continue;
+                                {
+                                    CAutoWriteLock lockerW(m_guard);
+                                    m_watchInfoMap.CloseDirHandle(p->first); // Should do nothing
+                                    p = watchedPaths.erase(p);               // Get next p from erase() to avoid invalidating the iterator
+                                    continue;
+                                }
                             }
                             else
                             {
@@ -337,9 +343,10 @@ void CPathWatcher::WorkerThread()
                         {
 #ifdef _DEBUG
                             {
-                                WCHAR FileSystemNameBuffer[60];
-                                FileSystemNameBuffer[(sizeof(FileSystemNameBuffer) / sizeof(sizeof(FileSystemNameBuffer[0]))) - 1] = 0;
-                                if (GetVolumeInformationByHandleW(pDirInfo->m_hDir, NULL, 0, NULL, NULL, NULL, FileSystemNameBuffer, sizeof(FileSystemNameBuffer) - 1) != 0)
+                                WCHAR            FileSystemNameBuffer[60]          = {};
+                                constexpr size_t FileSystemNameBufferSize          = sizeof(FileSystemNameBuffer) / sizeof(FileSystemNameBuffer[0]);
+                                FileSystemNameBuffer[FileSystemNameBufferSize - 1] = 0;
+                                if (GetVolumeInformationByHandleW(pDirInfo->m_hDir, NULL, 0, NULL, NULL, NULL, FileSystemNameBuffer, FileSystemNameBufferSize - 1) != 0)
                                     CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": Directory %s on file system \"%s\"\n"), p->first.c_str(), FileSystemNameBuffer);
                             }
 #endif
@@ -353,11 +360,13 @@ void CPathWatcher::WorkerThread()
                                     CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": CreateIoCompletionPort on %s directory failed (%s) \n"), p->first.c_str(), comErrorText);
                                 }
 #endif
-                                CAutoWriteLock lockerW(m_guard);
-                                // ClearInfoMap();
-                                m_watchInfoMap.CloseDirHandle(p->first.c_str());
-                                p = watchedPaths.erase(p); // Get next p from erase() to avoid invalidating the iterator
-                                continue;
+                                {
+                                    CAutoWriteLock lockerW(m_guard);
+                                    // ClearInfoMap();
+                                    m_watchInfoMap.CloseDirHandle(p->first.c_str());
+                                    p = watchedPaths.erase(p); // Get next p from erase() to avoid invalidating the iterator
+                                    continue;
+                                }
                             }
                             SecureZeroMemory(pDirInfo->m_buffer, sizeof(pDirInfo->m_buffer));
                             SecureZeroMemory(&pDirInfo->m_overlapped, sizeof(pDirInfo->m_overlapped));
@@ -382,17 +391,19 @@ void CPathWatcher::WorkerThread()
                                     CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": ReadDirectoryChanges on %s directory failed (%s) \n"), p->first.c_str(), comErrorText);
                                 }
 #endif
-                                CAutoWriteLock lockerW(m_guard);
-                                m_watchInfoMap.CloseDirHandle(p->first.c_str());
-                                p                         = watchedPaths.erase(p); // Get next p from erase() to avoid invalidating the iterator
-                                pDirInfo->m_bNotSupported = true;
-                                continue;
+                                {
+                                    CAutoWriteLock lockerW(m_guard);
+                                    m_watchInfoMap.CloseDirHandle(p->first.c_str());
+                                    p                         = watchedPaths.erase(p); // Get next p from erase() to avoid invalidating the iterator
+                                    pDirInfo->m_bNotSupported = true;
+                                    continue;
+                                }
                             } // !ReadDirectoryChangesW()
                             CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": watching path %s\n"), p->first.c_str());
                         } // if (bAddToIoCompletionPort)
                         p++;
                     } // for all watched paths
-                }
+                } // Read lock removal
                 bCheckHandles = false;
             }
             else
@@ -408,6 +419,8 @@ void CPathWatcher::WorkerThread()
                             // Should never reach here as m_bRunning is checked above
                             assert(false);
                             return;
+#if 0
+                        // Abandonned idea, remove at code cleanup
                         case FREE_PDI:
                         {
                             std::wstring* upDirName = reinterpret_cast<std::wstring*>(pdi);
@@ -416,11 +429,13 @@ void CPathWatcher::WorkerThread()
                             delete upDirName;
                         }
                             continue;
+#endif
                         case ALLOC_PDI:
                             bCheckHandles = true;
                             continue;
+                        default:
+                            assert(false);
                     }
-                    assert(false);
                 }
                 // NOTE: the longer this code takes to execute until ReadDirectoryChangesW
                 // is called again, the higher the chance that we miss some
@@ -471,15 +486,16 @@ void CPathWatcher::WorkerThread()
                                     L"MODIFIED",
                                     L"RENAMED_OLD_NAME",
                                     L"RENAMED_NEW_NAME"};
-                                wchar_t szActionName[100];
-                                szActionName[(sizeof(szActionName) / sizeof(szActionName[0])) - 1] = 0;
-                                if (action >= 1 && action <= (sizeof(szActionNames) / sizeof(szActionNames[0])))
+                                wchar_t          szActionName[30] = {};
+                                constexpr size_t nbActionNames    = sizeof(szActionNames) / sizeof(szActionNames[0]);
+                                constexpr size_t ActionNameSize   = sizeof(szActionName) / sizeof(szActionName[0]);
+                                if (action >= 1 && action <= nbActionNames)
                                 {
-                                    wcsncpy_s(szActionName, szActionNames[action - 1], (sizeof(szActionName) / sizeof(szActionName[0])) + 1);
+                                    wcsncpy_s(szActionName, szActionNames[action - 1], ActionNameSize - 1);
                                 }
                                 else
                                 {
-                                    swprintf_s(szActionName, (sizeof(szActionName) / sizeof(szActionName[0])) - 1, L"unknown action %d", action);
+                                    swprintf_s(szActionName, ActionNameSize - 1, L"unknown action %d", action);
                                 }
                                 CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": change notification for %s (%s)\n"), buf.get(), szActionName);
                             }
@@ -523,7 +539,7 @@ void CPathWatcher::WorkerThread()
                                     CAutoWriteLock locker(m_guard);
                                     m_changedPaths.insert(std::wstring(buf.get()));
                                     ::SetLastError(0);
-                                    if ((m_NotifMsg == 0) || (SendNotifyMessage(m_hCaller, m_NotifMsg, action, (LPARAM)buf.get()) == 0))
+                                    if ((HWND_BROADCAST == m_hCaller) || (SendNotifyMessage(m_hCaller, m_NotifMsg, action, (LPARAM)buf.get()) == 0))
                                     {
                                         _com_error comError(::GetLastError());
                                         LPCTSTR    comErrorText = comError.ErrorMessage();
@@ -780,6 +796,7 @@ void CPathWatcher::CWatchInfoMap::CloseDirHandle(const std::wstring p)
 
 void CPathWatcher::SetFileChangeNotif(HWND hCaller, UINT NotifMsg)
 {
-    m_NotifMsg = NotifMsg;
+    // Called at TrayWindow creation, no need for concurrency protection
     m_hCaller  = hCaller;
+    m_NotifMsg = NotifMsg;
 }
