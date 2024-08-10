@@ -473,39 +473,65 @@ void CPathWatcher::WorkerThread()
                                     L"RENAMED_NEW_NAME"};
                                 wchar_t szActionName[100];
                                 szActionName[(sizeof(szActionName) / sizeof(szActionName[0])) - 1] = 0;
-                                if (action >= 1 && action < (sizeof(szActionNames) / sizeof(szActionNames[0])))
+                                if (action >= 1 && action <= (sizeof(szActionNames) / sizeof(szActionNames[0])))
                                 {
-                                    wcsncpy_s(szActionName, szActionNames[action - 1], (sizeof(szActionName) / sizeof(szActionName[0])) - 1);
+                                    wcsncpy_s(szActionName, szActionNames[action - 1], (sizeof(szActionName) / sizeof(szActionName[0])) + 1);
                                 }
                                 else
                                 {
                                     swprintf_s(szActionName, (sizeof(szActionName) / sizeof(szActionName[0])) - 1, L"unknown action %d", action);
                                 }
                                 CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": change notification for %s (%s)\n"), buf.get(), szActionName);
-                                if (0 == _wcsicmp(buf.get(), L"\\\\?\\C:\\Users\\Daniel\\source\\repos\\dansyl1\\CryptSync\\.vs\\CryptSync\\FileContentIndex\\4b128779-5982-4733-a83d-356ffc1e6545.vsidx"))
-                                    DebugBreak();
                             }
 #endif
 
-#ifdef SUPPORT_READDIRECTORYCHANGESEXW
-                            // We don't care about changes to directories, unless one is removed. An addition will be handled
-                            // by the notification for files added/modified under it. A directory modification is irrelevant
-                            // to cryptsync. A directory rename could have a specific handling, renaming the corresponding
-                            // directory instead of re-encrypting/decrypting, but this is not implemented. A file rename 
-                            // must be re-encrypted/decrypted since the filename is in the .7z archive
-                            if (!(pnotify->FileAttributes & FILE_ATTRIBUTE_DIRECTORY) || action == FILE_ACTION_REMOVED)
                             {
+                                bool bIgnoreNotif = false;
+
+#ifdef SUPPORT_READDIRECTORYCHANGESEXW
+                                // We don't care about changes to directories, unless one is removed. An addition will be handled
+                                // by the notification for files added/modified under it. A directory modification is irrelevant
+                                // to cryptsync. A directory rename could have a specific handling, renaming the corresponding
+                                // directory instead of re-encrypting/decrypting, but this is not implemented. A file rename
+                                // must be re-encrypted/decrypted since the filename is in the .7z archive
+                                if ((pnotify->FileAttributes & FILE_ATTRIBUTE_DIRECTORY) && action != FILE_ACTION_REMOVED)
+                                {
+                                    {
+                                        bIgnoreNotif = true;
+                                        CAutoWriteLock locker(m_guard);
+                                        m_changedPaths.insert(std::wstring(buf.get()));
+                                    }
+                                }
+#endif
+
+                                wchar_t* filename;
+                                filename                 = reinterpret_cast<wchar_t*>(buf.get());
+                                std::wstring filenameObj = filename;
+                                //std::tolower(filenameObj);
+                                const wchar_t* const TempCryptSyncArchiveExtension = L".7z.tmp";
+                                if (_wcsicmp(filename + wcslen(filename) - sizeof(TempCryptSyncArchiveExtension)+1, TempCryptSyncArchiveExtension) == 0)
+                                {
+
+                                    auto pSlash = wcsrchr(filename, L'\\');
+                                    if ((pSlash != NULL) && _wcsnicmp(pSlash, L"\\~$", 3) == 0)
+                                    {
+                                        bIgnoreNotif = true;
+                                    }
+                                }
+                                if (!bIgnoreNotif)
                                 {
                                     CAutoWriteLock locker(m_guard);
                                     m_changedPaths.insert(std::wstring(buf.get()));
+                                    ::SetLastError(0);
+                                    if ((m_NotifMsg == 0) || (SendNotifyMessage(m_hCaller, m_NotifMsg, action, (LPARAM)buf.get()) == 0))
+                                    {
+                                        _com_error comError(::GetLastError());
+                                        LPCTSTR    comErrorText = comError.ErrorMessage();
+                                        CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": SendNotifyMessage error %s\n"), comErrorText);
+                                    }
                                 }
+                                buf.release();
                             }
-#else
-                            {
-                                CAutoWriteLock locker(m_guard);
-                                m_changedPaths.insert(std::wstring(buf.get()));
-                            }
-#endif
                         } while (nOffset);
                     }
                     else
@@ -750,4 +776,10 @@ void CPathWatcher::CWatchInfoMap::CloseDirHandle(const std::wstring p)
             info->CloseDirectoryHandle();
         }
     }
+}
+
+void CPathWatcher::SetFileChangeNotif(HWND hCaller, UINT NotifMsg)
+{
+    m_NotifMsg = NotifMsg;
+    m_hCaller  = hCaller;
 }

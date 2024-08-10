@@ -1035,7 +1035,6 @@ bool CFolderSync::EncryptFile(const std::wstring& orig, const std::wstring& cryp
         // just leaving it as it is. So by first checking if the source file
         // can be read, we reduce the chances of 7-zip destroying the target file.
         CAutoFile hFile = CreateFile(orig.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
-        Sleep(0 * 1000);
         if (!hFile.IsValid())
         {
             _com_error comError(::GetLastError());
@@ -1070,56 +1069,81 @@ bool CFolderSync::EncryptFile(const std::wstring& orig, const std::wstring& cryp
             return S_OK;
         };
 
-        std::wstring encryptTmpFile = CPathUtils::GetTempFilePath();
+        // Try to create temporary archive in same path so "MoveFileEx" works faster
+        std::wstring encryptTmpFile = (targetFolder + L"\\~$" + cryptName + L".tmp");
         C7Zip        compressor;
         compressor.SetPassword(password);
         compressor.SetArchivePath(encryptTmpFile);
         compressor.SetCompressionFormat(CompressionFormat::SevenZip, compression);
         compressor.SetCallback(progressFunc);
-        if (compressor.AddPath(orig))
+
+        if ((bRet = compressor.AddPath(orig)) == false)
+        {
+            // Assume issue is with filename, retry using temp directory.
+            encryptTmpFile = CPathUtils::GetTempFilePath();
+            compressor.SetArchivePath(encryptTmpFile);
+            bRet = compressor.AddPath(orig);
+        }
+        if (bRet)
         {
             CPathUtils::CreateRecursiveDirectory(targetFolder);
-            if (MoveFileEx(encryptTmpFile.c_str(), (targetFolder + L"\\" + cryptName).c_str(), MOVEFILE_COPY_ALLOWED | MOVEFILE_REPLACE_EXISTING))
+            
+            // Adjust some "metadata" on the new archive before moving it into place to avoid
+            // generating file modification notifications...
+            // 1) set content not indexed and the file timestamp
+            AdjustFileAttributes(encryptTmpFile, 0, FILE_ATTRIBUTE_NOT_CONTENT_INDEXED);
+            // 2) do equivalent of Z-zip's -stl option and set archive time based on archive's file timestamp
+            // This is required to ensure future sync operations work (based on source / encrypted file's last-modified date)
+            int   retry = 5;
+            DWORD error = 0;
+            do
             {
-                DeleteFile(encryptTmpFile.c_str());
-
-                // set content not indexed and the file timestamp
-                AdjustFileAttributes(targetFolder + L"\\" + cryptName.c_str(), 0, FILE_ATTRIBUTE_NOT_CONTENT_INDEXED);
-
-                if (resetArchAttr)
+                if (m_pProgDlg && m_pProgDlg->HasUserCancelled())
+                    break;
+                CAutoFile hFileCrypt = CreateFile(encryptTmpFile.c_str(), FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+                if (hFileCrypt.IsValid())
                 {
-                    // Reset archive attribute on original file
-                    AdjustFileAttributes(orig.c_str(), FILE_ATTRIBUTE_ARCHIVE, 0);
+                    bRet = !!SetFileTime(hFileCrypt, nullptr, nullptr, &fd.ft);
                 }
+                else
+                    bRet = false;
+                error = ::GetLastError();
+                if (!bRet)
+                    Sleep(200);
+            } while (!bRet && (retry-- > 0));
+            if (!bRet)
+            {
+                _com_error comError(error);
+                LPCTSTR    comErrorText = comError.ErrorMessage();
 
-                // Do equivalent of Z-zip's -stl option and set archive time based on archive's file timestamp
-                // This is required to ensure future sync operations work (based on source / encrypted file's last-modified date)
-                int  retry = 5;
-                do
-                {
-                    if (m_pProgDlg && m_pProgDlg->HasUserCancelled())
-                        break;
-                    CAutoFile hFileCrypt = CreateFile(crypt.c_str(), FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
-                    if (hFileCrypt.IsValid())
-                    {
-                        bRet = !!SetFileTime(hFileCrypt, nullptr, nullptr, &fd.ft);
-                    }
-                    else
-                        bRet = false;
-                    if (!bRet)
-                        Sleep(200);
-                } while (!bRet && (retry-- > 0));
-                if (!bRet) // Should archive file be erased in this case (future sync will be unreliable due to incorrect date)?
-                    CCircularLog::Instance()(_T("INFO:    failed to set file time on %s"), crypt.c_str());
-                bRet = true;
+                CCircularLog::Instance()(_T("INFO:    error %s setting file time on %s, sync failed"), comErrorText, crypt.c_str());
+                DeleteFile(encryptTmpFile.c_str());
             }
             else
             {
-                _com_error comError(::GetLastError());
-                LPCTSTR    comErrorText = comError.ErrorMessage();
+                // If the temporary file is not in the same volume at the targetFolder, then MoveFileEx
+                // will copy the file and then set it with the proper timestamp / attributes. This will
+                // trigger multiple file change notifications.
+                if (MoveFileEx(encryptTmpFile.c_str(), (targetFolder + L"\\" + cryptName).c_str(), MOVEFILE_COPY_ALLOWED | MOVEFILE_REPLACE_EXISTING))
+                {
+                    DeleteFile(encryptTmpFile.c_str());
 
-                CCircularLog::Instance()(L"ERROR:   error moving temporary encrypted file \"%s\" to \"%s\" (%s)", encryptTmpFile.c_str(), crypt.c_str(), comErrorText);
-                bRet             = false;
+                    if (resetArchAttr)
+                    {
+                        // Reset archive attribute on original file
+                        AdjustFileAttributes(orig.c_str(), FILE_ATTRIBUTE_ARCHIVE, 0);
+                    }
+
+                    bRet = true;
+                }
+                else
+                {
+                    _com_error comError(::GetLastError());
+                    LPCTSTR    comErrorText = comError.ErrorMessage();
+
+                    CCircularLog::Instance()(L"ERROR:   error moving temporary encrypted file \"%s\" to \"%s\" (%s)", encryptTmpFile.c_str(), crypt.c_str(), comErrorText);
+                    bRet = false;
+                }
             }
         }
         else
@@ -1683,42 +1707,7 @@ void CFolderSync::AdjustFileAttributes(const std::wstring& fName, DWORD dwFileAt
     }
     else
     {
-        WIN32_FILE_ATTRIBUTE_DATA fData2 = {};
-        if ((bRet = GetFileAttributesEx(fName.c_str(), GetFileExInfoStandard, &fData2)) != 0)
-        {
-            if (memcmp(&fData.ftLastWriteTime,  &fData2.ftLastWriteTime,  sizeof(fData2.ftLastWriteTime)) || 
-                memcmp(&fData.ftCreationTime,   &fData2.ftCreationTime,   sizeof(fData2.ftCreationTime))  ||
-                memcmp(&fData.ftLastAccessTime, &fData2.ftLastAccessTime, sizeof(fData2.ftLastAccessTime)) != 0)
-                DebugBreak();
-        }
-            bRet            = false;
-        // Use FILE_WRITE_ATTRIBUTES below to prevent sharing violation if working on
-        // file open by another application
-        CAutoFile hFile = CreateFile(fName.c_str(), FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
-        error           = ::GetLastError();
-        if (hFile.IsValid())
-        {
-            retry = 5;
-            do
-            {
-                if (m_pProgDlg && m_pProgDlg->HasUserCancelled())
-                    break;
-                //bRet  = !!SetFileTime(hFile, NULL, NULL, &fData.ftLastWriteTime);
-                error = ::GetLastError();
-                if (!bRet)
-                    Sleep(200);
-            } while (!bRet && (retry-- > 0));
-            hFile.CloseHandle();
-        }
-        if (!bRet)
-        {
-            _com_error comError(error);
-            LPCTSTR    comErrorText = comError.ErrorMessage();
-            CCircularLog::Instance()(_T("INFO:    failed to set file time on %s while adjusting its attributes (%s)"), fName.c_str(), comErrorText);
-            CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": Unable to set file time on %s (%s)\n"), fName.c_str(), comErrorText);
-        }
-        else
-            CCircularLog::Instance()(_T("INFO:    successfully adjusted attribute on %s"), fName.c_str());
+        CCircularLog::Instance()(_T("INFO:    successfully adjusted attribute on %s"), fName.c_str());
     }
 }
 

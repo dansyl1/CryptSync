@@ -29,6 +29,7 @@
 #include <process.h>
 
 #include "TextDlg.h"
+#include <comdef.h>
 
 constexpr auto                              TIMER_DETECTCHANGES                       = 100;
 constexpr auto                              TIMER_DETECTCHANGESINTERVAL               = 10000;
@@ -183,6 +184,7 @@ LRESULT CALLBACK CTrayWindow::WinMsgHandler(HWND hwnd, UINT uMsg, WPARAM wParam,
             break;
         case WM_CREATE:
         {
+            m_watcher.SetFileChangeNotif(hwnd, CTRAYWINDOW_FILE_CHANGE_NOTIF_MSG);
             m_hwnd = hwnd;
             m_watcher.ClearPaths();
             for (const auto& pair : g_pairs)
@@ -436,6 +438,39 @@ LRESULT CALLBACK CTrayWindow::WinMsgHandler(HWND hwnd, UINT uMsg, WPARAM wParam,
             m_watcher.Stop();
             ::PostQuitMessage(0);
             break;
+        case CTRAYWINDOW_FILE_CHANGE_NOTIF_MSG:
+        {
+#ifdef _DEBUG
+            const static wchar_t* const szActionNames[] = {
+                L"ADDED",
+                L"REMOVED",
+                L"MODIFIED",
+                L"RENAMED_OLD_NAME",
+                L"RENAMED_NEW_NAME"};
+            wchar_t szActionName[100];
+            szActionName[(sizeof(szActionName) / sizeof(szActionName[0])) - 1] = 0;
+            if (wParam >= 1 && wParam <= (sizeof(szActionNames) / sizeof(szActionNames[0])))
+            {
+                wcsncpy_s(szActionName, szActionNames[wParam - 1], (sizeof(szActionName) / sizeof(szActionName[0])) - 1);
+            }
+            else
+            {
+                swprintf_s(szActionName, (sizeof(szActionName) / sizeof(szActionName[0])) - 1, L"unknown action %d", (int)wParam);
+            }
+            wchar_t* filename;
+            filename = reinterpret_cast<wchar_t *>(lParam);
+            CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": change notification for %s (%s)\n"), filename, szActionName);
+            delete filename;
+#endif
+            if (SetTimer(*this, TIMER_DETECTCHANGES, 1, nullptr) == 0)
+            {
+                _com_error comError(::GetLastError());
+                LPCTSTR    comErrorText = comError.ErrorMessage();
+                CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": SetTimer TIMER_DETECTCHANGES at 1ms failed (%s)\n"), comErrorText);
+                DebugBreak();
+            }
+        }
+        break;
         default:
             return DefWindowProc(hwnd, uMsg, wParam, lParam);
     }

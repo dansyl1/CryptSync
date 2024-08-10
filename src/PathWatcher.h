@@ -66,6 +66,12 @@ public:
     void CommitPathChanges(void);
 
     /**
+    * Which message to send back to hwnd for file change notifications
+    */
+    void SetFileChangeNotif(HWND, UINT);
+
+
+    /**
      * Removes all watched paths
      */
     void ClearPaths()
@@ -167,4 +173,6 @@ private:
     CWatchInfoMap                    m_watchInfoMap;
 
     std::set<std::wstring>           m_changedPaths;
+    HWND                             m_hCaller;
+    UINT                             m_NotifMsg = 0;
 };
