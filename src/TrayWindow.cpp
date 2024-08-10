@@ -447,15 +447,16 @@ LRESULT CALLBACK CTrayWindow::WinMsgHandler(HWND hwnd, UINT uMsg, WPARAM wParam,
                 L"MODIFIED",
                 L"RENAMED_OLD_NAME",
                 L"RENAMED_NEW_NAME"};
-            wchar_t szActionName[100];
-            szActionName[(sizeof(szActionName) / sizeof(szActionName[0])) - 1] = 0;
-            if (wParam >= 1 && wParam <= (sizeof(szActionNames) / sizeof(szActionNames[0])))
+            wchar_t          szActionName[30] = {};
+            constexpr size_t nbActionNames    = sizeof(szActionNames) / sizeof(szActionNames[0]);
+            constexpr size_t ActionNameSize   = sizeof(szActionName) / sizeof(szActionName[0]);
+            if (wParam >= 1 && wParam <= nbActionNames)
             {
-                wcsncpy_s(szActionName, szActionNames[wParam - 1], (sizeof(szActionName) / sizeof(szActionName[0])) - 1);
+                wcsncpy_s(szActionName, szActionNames[wParam - 1], ActionNameSize - 1);
             }
             else
             {
-                swprintf_s(szActionName, (sizeof(szActionName) / sizeof(szActionName[0])) - 1, L"unknown action %d", (int)wParam);
+                swprintf_s(szActionName, ActionNameSize - 1, L"unknown action %d", (int)wParam);
             }
             wchar_t* filename;
             filename = reinterpret_cast<wchar_t *>(lParam);
