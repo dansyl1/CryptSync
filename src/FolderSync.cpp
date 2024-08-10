@@ -671,8 +671,7 @@ int CFolderSync::SyncFolder(const PairData& pt)
         }
         else
         {
-            // File exists in the encrypted folder (remove it from list 
-            // no need to processes it twice:
+            // File exists in the encrypted folder
             LONG cmp = 0;
             if (pt.m_fat)
             {
