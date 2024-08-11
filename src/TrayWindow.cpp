@@ -509,7 +509,7 @@ LRESULT CTrayWindow::DoCommand(int id)
                 // SyncFolders() no longer stops a background task when another.
                 // background task is requested by SyncFolders(). We stop it
                 // directly so next run uses new parameters.
-                m_folderSyncer.Stop();
+                m_folderSyncer.StopIfNeeded(g_pairs);
                 g_timer_fullScanInterval = CRegStdDWORD(L"Software\\CryptSync\\FullScanInterval", 60000 * 30);
                 if (g_timer_fullScanInterval > 0)
                     m_folderSyncer.SyncFolders(g_pairs);

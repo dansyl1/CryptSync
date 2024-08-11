@@ -28,7 +28,6 @@
 #include <shellapi.h>
 #include <shlwapi.h>
 
-#define CTRAYWINDOW_FILE_CHANGE_NOTIF_MSG WM_APP + 0
 class CTrayWindow : public CWindow
 {
 public:

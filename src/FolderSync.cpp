@@ -99,6 +99,47 @@ CFolderSync::~CFolderSync()
     Stop();
 }
 
+void CFolderSync::StopIfNeeded(const PairVector& pv) 
+{
+    bool          bNeedToStop = false;
+
+    { // Lock scope
+        CAutoReadLock locker(m_guard);
+        for (auto it = pv.cbegin(); (it != pv.cend()) && m_bRunning; ++it)
+        {
+            if ((_wcsicmp(m_currentPath.m_cryptPath.c_str(), CPathUtils::AdjustForMaxPath(it->m_cryptPath).c_str()) == 0) &&
+                (_wcsicmp(m_currentPath.m_origPath.c_str(), CPathUtils::AdjustForMaxPath(it->m_origPath).c_str()) == 0))
+            {
+                // If something change, then stop, else continue current sync
+                if (it->m_enabled != m_currentPath.m_enabled ||
+                    it->m_ResetOriginalArchAttr != m_currentPath.m_ResetOriginalArchAttr ||
+                    it->m_password != m_currentPath.m_password ||
+                    it->m_encNames != m_currentPath.m_encNames ||
+                    it->m_encNamesNew != m_currentPath.m_encNamesNew ||
+                    it->m_syncDir != m_currentPath.m_syncDir ||
+                    it->m_use7Z != m_currentPath.m_use7Z ||
+                    it->m_useGpg != m_currentPath.m_useGpg ||
+                    it->m_fat != m_currentPath.m_fat ||
+                    it->m_compressSize != m_currentPath.m_compressSize ||
+                    it->m_syncDeleted != m_currentPath.m_syncDeleted ||
+                    it->noSync() != m_currentPath.noSync() ||
+                    it->cryptOnly() != m_currentPath.cryptOnly() ||
+                    it->copyOnly() != m_currentPath.copyOnly()
+                    )
+                {
+                    CCircularLog::Instance()(L"INFO:    interrupted syncing folder orig \"%s\" with crypt \"%s\" (pair settings changed)", it->m_origPath.c_str(), it->m_cryptPath.c_str());
+                    CCircularLog::Instance().Save();
+                    CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T("Interrupted syncing folder orig \"%s\" with crypt \"%s\" (pair settings changed)"), it->m_origPath.c_str(), it->m_cryptPath.c_str());
+                    bNeedToStop = true;
+                    break;
+                }
+            }
+        }
+    } // No more lock
+    if (bNeedToStop)
+        Stop();
+}
+
 void CFolderSync::Stop()
 {
     InterlockedExchange(&m_bRunning, FALSE);
@@ -1065,6 +1106,7 @@ bool CFolderSync::EncryptFile(const std::wstring& orig, const std::wstring& cryp
         auto progressFunc = [&](UInt64, UInt64, const std::wstring&) {
             if (m_pProgDlg && m_pProgDlg->HasUserCancelled())
                 return E_ABORT;
+            Sleep(0);
             return S_OK;
         };
 
@@ -1079,6 +1121,7 @@ bool CFolderSync::EncryptFile(const std::wstring& orig, const std::wstring& cryp
         if ((bRet = compressor.AddPath(orig)) == false)
         {
             // Assume issue is with filename, retry using temp directory.
+            DeleteFile(encryptTmpFile.c_str());
             encryptTmpFile = CPathUtils::GetTempFilePath();
             compressor.SetArchivePath(encryptTmpFile);
             bRet = compressor.AddPath(orig);
@@ -1144,10 +1187,6 @@ bool CFolderSync::EncryptFile(const std::wstring& orig, const std::wstring& cryp
                     bRet = false;
                 }
             }
-        }
-        else
-        {
-            bRet = false;
         }
         if (bRet)
         {
