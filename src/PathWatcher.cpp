@@ -536,6 +536,26 @@ void CPathWatcher::WorkerThread()
                                 }
                                 if (!bIgnoreNotif)
                                 {
+                                    // Files for which notifications
+                                    // will be ignored. Inspired from 
+                                    // DEFAULT_IGNORESDEFAULT_IGNORES in Ignores.h
+                                    const static wchar_t* const szExtsToIgnore[] = {
+                                        L"*.tmp*",
+                                        L"~*.*",
+                                        L"thumbs.db",
+                                        L"desktop.ini"};
+                                    constexpr size_t nbExtsToIgnore = sizeof(szExtsToIgnore) / sizeof(szExtsToIgnore[0]);
+                                    for (auto i = 0; i < nbExtsToIgnore; i++)
+                                    {
+                                        if (wcswildicmp(szExtsToIgnore[i], buf.get()))
+                                        {
+                                            bIgnoreNotif = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                                if (!bIgnoreNotif)
+                                {
                                     CAutoWriteLock locker(m_guard);
                                     m_changedPaths.insert(std::wstring(buf.get()));
                                     ::SetLastError(0);
