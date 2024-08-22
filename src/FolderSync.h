@@ -90,7 +90,7 @@ private:
     void                                       SyncFile(const std::wstring& plainPath, const PairData& pt);
     int                                        SyncFolderThread();
     int                                        SyncFolder(const PairData& pt);
-    std::map<std::wstring, FileData>           GetFileList(bool orig, const std::wstring& path, const std::wstring& password, bool encnames, bool encnamesnew, bool use7Z, bool useGpg, DWORD& error) const;
+    std::map<std::wstring, FileData>           GetFileList(bool orig, const std::wstring& path, const std::wstring& password, bool encnames, bool encnamesnew, bool use7Z, bool useGpg, size_t& max_depth, DWORD& error) const;
     bool                                       EncryptFile(const std::wstring& orig, const std::wstring& crypt, const std::wstring& password, const FileData& fd, bool useGpg, bool noCompress, int compresssize, bool resetArchAttr, SyncDir syncDir);
     bool                                       DecryptFile(const std::wstring& orig, const std::wstring& crypt, const std::wstring& password, const FileData& fd, bool useGpg, SyncDir syncDir);
     static std::wstring                        GetFileTimeStringForLog(const FILETIME& ft);

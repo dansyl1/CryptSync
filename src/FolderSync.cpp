@@ -590,7 +590,8 @@ int CFolderSync::SyncFolder(const PairData& pt)
         }
     }
     DWORD dwErr        = 0;
-    m_origFileList = GetFileList(true, pt.m_origPath, pt.m_password, pt.m_encNames, pt.m_encNamesNew, pt.m_use7Z, pt.m_useGpg, dwErr);
+    size_t OrigDepth;
+    m_origFileList       = GetFileList(true, pt.m_origPath, pt.m_password, pt.m_encNames, pt.m_encNamesNew, pt.m_use7Z, pt.m_useGpg, OrigDepth, dwErr);
     m_bOrigFileListEmpty = m_origFileList.empty();
 #if 0
     for (auto it = m_origFileList.cbegin(); (it != m_origFileList.cend()) && m_bRunning; ++it)
@@ -613,7 +614,8 @@ int CFolderSync::SyncFolder(const PairData& pt)
         m_bOrigFileListEmpty = true;
     }
 
-    m_cryptFileList = GetFileList(false, pt.m_cryptPath, pt.m_password, pt.m_encNames, pt.m_encNamesNew, pt.m_use7Z, pt.m_useGpg, dwErr);
+    size_t CryptDepth;
+    m_cryptFileList = GetFileList(false, pt.m_cryptPath, pt.m_password, pt.m_encNames, pt.m_encNamesNew, pt.m_use7Z, pt.m_useGpg, CryptDepth, dwErr);
 #if 0
     for (auto it = m_cryptFileList.cbegin(); (it != m_cryptFileList.cend()) && m_bRunning; ++it)
     {
@@ -1034,9 +1036,10 @@ int CFolderSync::SyncFiles(const PairData &pt, const std::pair<std::wstring, Fil
     return retVal;
 }
 
-std::map<std::wstring, FileData> CFolderSync::GetFileList(bool orig, const std::wstring& path, const std::wstring& password, bool encnames, bool encnamesnew, bool use7Z, bool useGpg, DWORD& error) const
+std::map<std::wstring, FileData> CFolderSync::GetFileList(bool orig, const std::wstring& path, const std::wstring& password, bool encnames, bool encnamesnew, bool use7Z, bool useGpg, size_t & max_depth, DWORD& error) const
 {
     error                 = 0;
+    max_depth             = 0;
     std::wstring enumpath = path;
     if ((enumpath.size() == 2) && (enumpath[1] == ':'))
         enumpath += L"\\";
@@ -1115,6 +1118,8 @@ std::map<std::wstring, FileData> CFolderSync::GetFileList(bool orig, const std::
         }
 
         fileList[relPath] = fd;
+        if (max_depth < relPath.length())
+            max_depth = relPath.length();
         if (error == 0)
             error = enumerator.GetError();
     }
