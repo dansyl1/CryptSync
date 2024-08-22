@@ -24,6 +24,7 @@
 #include "PathUtils.h"
 #include "CircularLog.h"
 #include "resource.h"
+#include <cassert>
 
 constexpr auto MAX_LOADSTRING = 100;
 
@@ -223,6 +224,7 @@ int APIENTRY _tWinMain(HINSTANCE hInstance,
         return 0;
     }
 
+    msg.wParam = 1;
     CTrayWindow trayWindow(hInstance);
     trayWindow.ShowDialogImmediately(!parser.HasKey(L"tray"));
 
@@ -230,21 +232,27 @@ int APIENTRY _tWinMain(HINSTANCE hInstance,
     {
         HACCEL hAccelTable = LoadAccelerators(hInstance, MAKEINTRESOURCE(IDC_CryptSync));
         // Main message loop:
-        while (GetMessage(&msg, nullptr, 0, 0))
+        BOOL   bRet;
+        while ((bRet=GetMessage(&msg, nullptr, 0, 0)) != 0)
         {
+            assert(bRet != -1);
+            if (bRet == -1)
+            {
+                CCircularLog::Instance()(L"ERROR:   Unexpected error %lu on GetMessage(), exiting", GetLastError());
+                break;
+            }
             if (!TranslateAccelerator(msg.hwnd, hAccelTable, &msg))
             {
                 TranslateMessage(&msg);
                 DispatchMessage(&msg);
             }
         }
-        return static_cast<int>(msg.wParam);
     }
 
+    CCircularLog::Instance()(L"INFO:    exiting CryptSync");
+    CCircularLog::Instance().Save();
     CoUninitialize();
     OleUninitialize();
     CloseHandle(hReloadProtection);
-    CCircularLog::Instance()(L"INFO:    exiting CryptSync");
-    CCircularLog::Instance().Save();
-    return 1;
+    return static_cast<int>(msg.wParam);
 }
