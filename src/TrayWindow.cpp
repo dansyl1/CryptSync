@@ -250,7 +250,7 @@ LRESULT CALLBACK CTrayWindow::WinMsgHandler(HWND hwnd, UINT uMsg, WPARAM wParam,
                 case WM_MOUSEMOVE:
                 {
                     int   count    = static_cast<int>(m_folderSyncer.GetFailureCount());
-                    WCHAR buf[200] = {0};
+                    WCHAR buf[200] = {};
                     if (count)
                         swprintf_s(buf, L"%d items failed to synchronize", count);
                     else if (m_totalItemsToProcess)
@@ -281,7 +281,7 @@ LRESULT CALLBACK CTrayWindow::WinMsgHandler(HWND hwnd, UINT uMsg, WPARAM wParam,
                     * Options? 
                     * 1) Perhaps temporarily set TIMER_DETECTCHANGES to a small (200 ms?) value
                     * and keep coming back here until m_lastChangedPaths.empty() is true.
-                    * The "for (auto lastChangedPath" loop below would be obsolete and 
+                    * The "for (auto lastChangedPath)" loop below would be obsolete and
                     * path re-insertion should be postponed until m_lastChangedPaths.empty,
                     * to avoid doing very 200 ms.
                     * 2) Start a thread to process all the pending changes.
@@ -306,7 +306,7 @@ LRESULT CALLBACK CTrayWindow::WinMsgHandler(HWND hwnd, UINT uMsg, WPARAM wParam,
                             else
                             {
                                 CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": postponing synced %s\n"), lastChangedPath->c_str());
-                                lastChangedPath++;
+                                ++lastChangedPath;
                             }
                         }
                         CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": postponed %d syncs\n"), m_lastChangedPaths.size());
@@ -378,7 +378,7 @@ LRESULT CALLBACK CTrayWindow::WinMsgHandler(HWND hwnd, UINT uMsg, WPARAM wParam,
                                     else
                                     {
                                         CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": postponing synced %s (TIMER_FULLSCAN)\n"), lastChangedPath->c_str());
-                                        lastChangedPath++;
+                                        ++lastChangedPath;
                                     }
                                 }
                                 CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": postponed %d syncs (TIMER_FULLSCAN)\n"), m_lastChangedPaths.size());
@@ -504,12 +504,12 @@ LRESULT CTrayWindow::DoCommand(int id)
             dlg.SetFailures(m_folderSyncer.GetFailures());
             INT_PTR ret           = dlg.DoModal(hResource, IDD_OPTIONS, nullptr);
             m_bOptionsDialogShown = false;
+            // SyncFolders() no longer stops a background task when another.
+            // background task is requested by SyncFolders(). We stop it
+            // directly so next run uses new parameters.
+            m_folderSyncer.Stop();
             if ((ret == IDOK) || (ret == IDCANCEL))
             {
-                // SyncFolders() no longer stops a background task when another.
-                // background task is requested by SyncFolders(). We stop it
-                // directly so next run uses new parameters.
-                m_folderSyncer.StopIfNeeded(g_pairs);
                 g_timer_fullScanInterval = CRegStdDWORD(L"Software\\CryptSync\\FullScanInterval", 60000 * 30);
                 if (g_timer_fullScanInterval > 0)
                     m_folderSyncer.SyncFolders(g_pairs);
