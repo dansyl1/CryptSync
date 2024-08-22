@@ -19,6 +19,7 @@
 
 #pragma once
 
+#include "ThreadSafe.h"
 #include "Pairs.h"
 #include "ReaderWriterLock.h"
 #include "ProgressDlg.h"
@@ -89,7 +90,7 @@ private:
     void                                       SyncFile(const std::wstring& plainPath, const PairData& pt);
     int                                        SyncFolderThread();
     int                                        SyncFolder(const PairData& pt);
-    std::map<std::wstring, FileData> GetFileList(bool orig, const std::wstring& path, const std::wstring& password, bool encnames, bool encnamesnew, bool use7Z, bool useGpg, DWORD& error) const;
+    std::map<std::wstring, FileData>           GetFileList(bool orig, const std::wstring& path, const std::wstring& password, bool encnames, bool encnamesnew, bool use7Z, bool useGpg, DWORD& error) const;
     bool                                       EncryptFile(const std::wstring& orig, const std::wstring& crypt, const std::wstring& password, const FileData& fd, bool useGpg, bool noCompress, int compresssize, bool resetArchAttr, SyncDir syncDir);
     bool                                       DecryptFile(const std::wstring& orig, const std::wstring& crypt, const std::wstring& password, const FileData& fd, bool useGpg, SyncDir syncDir);
     static std::wstring                        GetFileTimeStringForLog(const FILETIME& ft);
@@ -98,9 +99,15 @@ private:
     void                                       AdjustFileAttributes(const std::wstring& orig, DWORD dwFileAttributesToClear, DWORD dwFileAttributesToSet) const;
     static bool                                DeletePathToTrash(const std::wstring& path);
     BOOL                                       CSCopyFile(std::wstring ExistingFileName, std::wstring NewFileName, bool resetOriginalArchAttr, SyncDir syncDir, SyncOp syncOp);
+    int                                        SyncFiles(const PairData &pt, const std::pair<std::wstring, FileData>* it, const std::pair<const std::wstring, FileData>* cryptItptr);
+    CThreadSafeMap<std::wstring, FileData>     m_origFileList;
+    bool                                       m_bOrigFileListEmpty;
+    CThreadSafeMap<std::wstring, FileData>     m_cryptFileList;
     CReaderWriterLock                          m_guard;
     CReaderWriterLock                          m_failureGuard;
     CReaderWriterLock                          m_notingGuard;
+    CReaderWriterLock                          m_origListGuard;
+    CReaderWriterLock                          m_cryptListGuard;
     PairVector                                 m_pairs;
     std::wstring                               m_gnuPg;
     HWND                                       m_parentWnd;

@@ -204,6 +204,7 @@
     <ClInclude Include="COMPtrs.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="ThreadSafe.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="..\default.build">

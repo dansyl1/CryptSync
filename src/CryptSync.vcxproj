@@ -246,6 +246,7 @@
     <ClInclude Include="resource.h" />
     <ClInclude Include="stdafx.h" />
     <ClInclude Include="TextDlg.h" />
+    <ClInclude Include="ThreadSafe.h" />
     <ClInclude Include="TrayWindow.h" />
     <ClInclude Include="UpdateDlg.h" />
   </ItemGroup>

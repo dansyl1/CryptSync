@@ -73,9 +73,11 @@ void CPathWatcher::Stop()
     {
         if (PostQueuedCompletionStatus(m_hCompPort, STOPPING, NULL, nullptr) == 0)
         {
+#if _DEBUG
             _com_error comError(::GetLastError());
             LPCTSTR    comErrorText = comError.ErrorMessage();
             CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": PostQueuedCompletionStatus STOPPING failed (%s)\n"), comErrorText);
+#endif
         }
         // m_hCompPort.CloseHandle(); // Commented, will be done in thread when it calls ClearInfoMap()
     }
@@ -134,9 +136,11 @@ void CPathWatcher::CommitPathChanges()
     {
         if (PostQueuedCompletionStatus(m_hCompPort, ALLOC_PDI, NULL, nullptr) == 0)
         {
+#ifdef _DEBUG
             _com_error comError(::GetLastError());
             LPCTSTR    comErrorText = comError.ErrorMessage();
             CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": PostQueuedCompletionStatus ALLOC_PDI failed (%s)\n"), comErrorText);
+#endif
         }
     }
 }
@@ -476,6 +480,8 @@ void CPathWatcher::WorkerThread()
                             buf[bufferSize - 1] = 0;
                             if (err != 0)
                             {
+                                CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": error %d constructing change notification filename\n"), err);
+                                DebugBreak();
                                 continue;
                             }
 #ifdef _DEBUG
@@ -522,8 +528,6 @@ void CPathWatcher::WorkerThread()
 
                                 wchar_t* filename;
                                 filename                 = reinterpret_cast<wchar_t*>(buf.get());
-                                std::wstring filenameObj = filename;
-                                //std::tolower(filenameObj);
                                 const wchar_t* const TempCryptSyncArchiveExtension = L".7z.tmp";
                                 if (_wcsicmp(filename + wcslen(filename) - sizeof(TempCryptSyncArchiveExtension)+1, TempCryptSyncArchiveExtension) == 0)
                                 {
@@ -561,12 +565,19 @@ void CPathWatcher::WorkerThread()
                                     ::SetLastError(0);
                                     if ((HWND_BROADCAST == m_hCaller) || (SendNotifyMessage(m_hCaller, m_NotifMsg, action, (LPARAM)buf.get()) == 0))
                                     {
+#ifdef _DEBUG
                                         _com_error comError(::GetLastError());
                                         LPCTSTR    comErrorText = comError.ErrorMessage();
                                         CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": SendNotifyMessage error %s\n"), comErrorText);
+#endif
+                                    }
+                                    else
+                                    {
+                                        // The wchar_t[] will be destroyed when m_NotifMsg 
+                                        // is processed by m_hCaller
+                                        buf.release();
                                     }
                                 }
-                                buf.release();
                             }
                         } while (nOffset);
                     }
@@ -737,9 +748,11 @@ bool CPathWatcher::CDirWatchInfo::CloseDirectoryHandle()
         // DWORD NumberOfBytesTransferred;
         if (CancelIoEx(m_hDir, &m_overlapped) == 0)
         {
+#ifdef _DEBUG
             _com_error comError(GetLastError());
             LPCTSTR    comErrorText = comError.ErrorMessage();
             CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": CancelIoEx failed (%s)\n"), comErrorText);
+#endif
         }
 #if 0
         while (GetOverlappedResult(m_hDir, &m_overlapped, &NumberOfBytesTransferred, false) == 0)

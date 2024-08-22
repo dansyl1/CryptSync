@@ -242,6 +242,9 @@ int CFolderSync::SyncFolderThread()
             CAutoWriteLock locker(m_guard);
             m_currentPath = PairData();
         }
+        m_origFileList.clear();
+        m_bOrigFileListEmpty = true;
+        m_cryptFileList.clear();
     }
     if (m_pProgDlg)
     {
@@ -587,9 +590,10 @@ int CFolderSync::SyncFolder(const PairData& pt)
         }
     }
     DWORD dwErr        = 0;
-    auto  origFileList = GetFileList(true, pt.m_origPath, pt.m_password, pt.m_encNames, pt.m_encNamesNew, pt.m_use7Z, pt.m_useGpg, dwErr);
+    m_origFileList = GetFileList(true, pt.m_origPath, pt.m_password, pt.m_encNames, pt.m_encNamesNew, pt.m_use7Z, pt.m_useGpg, dwErr);
+    m_bOrigFileListEmpty = m_origFileList.empty();
 #if 0
-    for (auto it = origFileList.cbegin(); (it != origFileList.cend()) && m_bRunning; ++it)
+    for (auto it = m_origFileList.cbegin(); (it != m_origFileList.cend()) && m_bRunning; ++it)
     {
         assert(_wcsicmp(it->first.c_str(), it->second.fileRelPath.c_str()) == 0);
     }
@@ -605,12 +609,13 @@ int CFolderSync::SyncFolder(const PairData& pt)
         // we clear the list of files in the source folder:
         // that will skip the encryption phase and go straight
         // to the decrypting phase.
-        origFileList.clear();
+        m_origFileList.clear();
+        m_bOrigFileListEmpty = true;
     }
 
-    auto cryptFileList = GetFileList(false, pt.m_cryptPath, pt.m_password, pt.m_encNames, pt.m_encNamesNew, pt.m_use7Z, pt.m_useGpg, dwErr);
+    m_cryptFileList = GetFileList(false, pt.m_cryptPath, pt.m_password, pt.m_encNames, pt.m_encNamesNew, pt.m_use7Z, pt.m_useGpg, dwErr);
 #if 0
-    for (auto it = cryptFileList.cbegin(); (it != cryptFileList.cend()) && m_bRunning; ++it)
+    for (auto it = m_cryptFileList.cbegin(); (it != m_cryptFileList.cend()) && m_bRunning; ++it)
     {
         assert(_wcsicmp(it->first.c_str(), it->second.fileRelPath.c_str()) == 0);
     }
@@ -623,14 +628,26 @@ int CFolderSync::SyncFolder(const PairData& pt)
 
     int retVal = ErrorNone;
 
+    {
+        CAutoReadLock lockerorig(m_origListGuard);
+        CAutoReadLock lockercrypt(m_cryptListGuard);
+        m_progressTotal += static_cast<DWORD>(m_origFileList.size() + m_cryptFileList.size());
+    }
     if (m_trayWnd)
         PostMessage(m_trayWnd, WM_PROGRESS, m_progress, m_progressTotal);
-    m_progressTotal += static_cast<DWORD>(origFileList.size() + cryptFileList.size());
 
     auto lastSaveTicks = GetTickCount64();
 
-    for (auto it = origFileList.cbegin(); (it != origFileList.cend()) && m_bRunning; ++it)
+    while (true)
     {
+        std::pair<std::wstring, FileData> it;
+        {
+            CAutoWriteLock locker(m_origListGuard);
+            auto firstItem = m_origFileList.cbegin();
+            if (firstItem == m_origFileList.cend())
+                break;
+            it = *firstItem;
+        }
         if (GetTickCount64() - lastSaveTicks > 60000)
         {
             CCircularLog::Instance().Save();
@@ -641,7 +658,7 @@ int CFolderSync::SyncFolder(const PairData& pt)
         if (m_pProgDlg)
         {
             m_pProgDlg->SetLine(0, L"syncing files");
-            m_pProgDlg->SetLine(2, it->first.c_str(), true);
+            m_pProgDlg->SetLine(2, it.first.c_str(), true);
             m_pProgDlg->SetProgress(m_progress, m_progressTotal);
             if (m_pProgDlg->HasUserCancelled())
             {
@@ -653,14 +670,95 @@ int CFolderSync::SyncFolder(const PairData& pt)
         }
         ++m_progress;
 
+        {
+            CAutoWriteLock locker(m_cryptListGuard);
+            auto cryptIt = m_cryptFileList.find(it.first);
+
+            // cryptItptr is ptr to cryptIt found or nullptr
+            // m_cryptListGuard prevents cryptIt becoming invalid while 
+            // processing file change notifications. Using nullptr
+            // for "not found" so CFolderSync::SyncFiles() need not know
+            // value of m_cryptFileList.end()
+            const std::pair<const std::wstring, FileData>* cryptItptr;
+            if (cryptIt == m_cryptFileList.cend())
+            {
+                cryptItptr = nullptr;
+            }
+            else
+            {
+                cryptItptr = &(*cryptIt);
+            }
+            // const std::pair<const st
+            retVal |= SyncFiles(pt, &it, cryptItptr);
+            m_origFileList.erase(it.first);
+            // Remove item from m_cryptFileList,
+            // no need to processes it again in the loop below
+            if (cryptIt != m_cryptFileList.cend())
+                m_cryptFileList.erase(cryptIt);
+            // By erasing the entry, we just "processed" it
+            ++m_progress;
+        } // m_cryptListGuard
+    }
+    // now go through the encrypted file list and if there's a file that's not in the original file list,
+    // decrypt it
+    //for (auto it = m_cryptFileList.cbegin(); (it != m_cryptFileList.cend()) && m_bRunning; ++it)
+    //{
+    while (true)
+    {
+        std::pair<std::wstring, FileData> it;
+        {
+            CAutoWriteLock locker(m_cryptListGuard);
+            auto           firstItem = m_cryptFileList.cbegin();
+            if (firstItem == m_cryptFileList.cend())
+                break;
+            it = *firstItem;
+        }
+        if (GetTickCount64() - lastSaveTicks > 60000)
+        {
+            CCircularLog::Instance().Save();
+            lastSaveTicks = GetTickCount64();
+        }
+        if (m_trayWnd)
+            PostMessage(m_trayWnd, WM_PROGRESS, m_progress, m_progressTotal);
+        if (m_pProgDlg)
+        {
+            m_pProgDlg->SetLine(0, L"syncing files");
+            m_pProgDlg->SetLine(2, it.first.c_str(), true);
+            m_pProgDlg->SetProgress(m_progress, m_progressTotal);
+            if (m_pProgDlg->HasUserCancelled())
+            {
+                if (m_trayWnd)
+                    PostMessage(m_trayWnd, WM_PROGRESS, 0, 0);
+                retVal |= ErrorCancelled;
+                break;
+            }
+        }
+        ++m_progress;
+        auto origit = m_origFileList.find(it.first);
+        if (origit == m_origFileList.cend())
+            retVal |= SyncFiles(pt, nullptr, reinterpret_cast<const std::pair<const std::wstring, FileData>*>(&it));
+        m_cryptFileList.erase(it.first);
+    }
+    if (m_trayWnd)
+        PostMessage(m_trayWnd, WM_PROGRESS, 0, 0);
+    CCircularLog::Instance()(L"INFO:    finished syncing folder orig \"%s\" with crypt \"%s\"", pt.m_origPath.c_str(), pt.m_cryptPath.c_str());
+    CCircularLog::Instance().Save();
+    return retVal;
+}
+
+int CFolderSync::SyncFiles(const PairData &pt, const std::pair<std::wstring, FileData>* it, 
+                                               const std::pair<const std::wstring, FileData>* cryptIt)
+{
+    int retVal = ErrorNone;
+    if (it != nullptr)
+    {
         if (CIgnores::Instance().IsIgnored(CPathUtils::Append(pt.m_origPath, it->first)))
-            continue;
+            return retVal;
         if (pt.IsIgnored(CPathUtils::Append(pt.m_origPath, it->first)))
-            continue;
+            return retVal;
         bool bCryptOnly = pt.IsCryptOnly(CPathUtils::Append(pt.m_origPath, it->first));
         bool bCopyOnly  = pt.IsCopyOnly(CPathUtils::Append(pt.m_origPath, it->first));
-        auto cryptIt    = cryptFileList.find(it->first);
-        if (cryptIt == cryptFileList.end())
+        if (cryptIt == nullptr)
         {
             // file does not exist in the encrypted folder:
             if ((pt.m_syncDir == BothWays) || (pt.m_syncDir == SrcToDst))
@@ -693,7 +791,7 @@ int CFolderSync::SyncFolder(const PairData& pt)
                     // used in two locations and exploratory code has
                     // been put in place to test it is ok to remove it.
                     // Memory usage will be reduce between 40 to 50%
-                    assert(_wcsicmp(it->first.c_str(), it->second.fileRelPath.c_str()) == 0);
+                    // assert(_wcsicmp(it->first.c_str(), it->second.fileRelPath.c_str()) == 0);
                     std::wstring orig = CPathUtils::Append(pt.m_origPath, it->first.c_str());
 
                     // No need to adjust m_notifyIgnores as we are in DestToSrc and not BothWays
@@ -827,57 +925,31 @@ int CFolderSync::SyncFolder(const PairData& pt)
                     }
                 }
             }
-            // Remove item from cryptFileList, 
-            // no need to processes it again in the loop below
-            cryptFileList.erase(cryptIt);
-            // By erasing the entry, we just "processed"
-            // it
-            ++m_progress;
         } // File exists in the encrypted folder 
     }
-    // now go through the encrypted file list and if there's a file that's not in the original file list,
-    // decrypt it
-    for (auto it = cryptFileList.cbegin(); (it != cryptFileList.cend()) && m_bRunning; ++it)
-    {
-        if (m_trayWnd)
-            PostMessage(m_trayWnd, WM_PROGRESS, m_progress, m_progressTotal);
-        if (m_pProgDlg)
-        {
-            m_pProgDlg->SetLine(0, L"syncing files");
-            m_pProgDlg->SetLine(2, it->first.c_str(), true);
-            m_pProgDlg->SetProgress(m_progress, m_progressTotal);
-            if (m_pProgDlg->HasUserCancelled())
-            {
-                if (m_trayWnd)
-                    PostMessage(m_trayWnd, WM_PROGRESS, 0, 0);
-                retVal |= ErrorCancelled;
-                break;
-            }
-        }
-        ++m_progress;
-
-        if (CIgnores::Instance().IsIgnored(CPathUtils::Append(pt.m_origPath, it->first)))
-            continue;
-        if (pt.IsIgnored(CPathUtils::Append(pt.m_origPath, it->first)))
-            continue;
-        bool bCopyOnly = pt.IsCopyOnly(CPathUtils::Append(pt.m_origPath, it->first));
-        auto origit    = origFileList.find(it->first);
-        if (origit == origFileList.end())
+    else
+    { // it == nullptr
+        if (CIgnores::Instance().IsIgnored(CPathUtils::Append(pt.m_origPath, cryptIt->first)))
+            return retVal;
+        if (pt.IsIgnored(CPathUtils::Append(pt.m_origPath, cryptIt->first)))
+            return retVal;
+        bool bCopyOnly = pt.IsCopyOnly(CPathUtils::Append(pt.m_origPath, cryptIt->first));
+        if (it == nullptr)
         {
             // file does not exist in the original folder:
-            if ((pt.m_syncDir == SrcToDst) && !origFileList.empty())
+            if ((pt.m_syncDir == SrcToDst) && !m_bOrigFileListEmpty)
             {
                 if (pt.m_syncDeleted)
                 {
                     // remove the encrypted file
-                    CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": counterpart of file %s does not exist in src folder, delete file\n"), it->first.c_str());
-                    CCircularLog::Instance()(_T("INFO:    counterpart of file %s does not exist in src folder, delete file"), it->first.c_str());
+                    CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": counterpart of file %s does not exist in src folder, delete file\n"), cryptIt->first.c_str());
+                    CCircularLog::Instance()(_T("INFO:    counterpart of file %s does not exist in src folder, delete file"), cryptIt->first.c_str());
 
                     // Handle the case where the file in the encrypted directory is not a
                     // cryptsync archive
-                    std::wstring FileToDelete = it->second.filenameEncrypted ? 
-                        GetEncryptedFilename(it->first, pt.m_password, pt.m_encNames, pt.m_encNamesNew, pt.m_use7Z, pt.m_useGpg) : 
-                        it->first;
+                    std::wstring FileToDelete = cryptIt->second.filenameEncrypted ? 
+                        GetEncryptedFilename(cryptIt->first, pt.m_password, pt.m_encNames, pt.m_encNamesNew, pt.m_use7Z, pt.m_useGpg) : 
+                        cryptIt->first;
                     std::wstring crypt        = CPathUtils::Append(pt.m_cryptPath, FileToDelete);
                     // No need to adjust m_notifyIgnores as we are in SrcToDst and not BothWays
                     if (!DeletePathToTrash(crypt))
@@ -888,14 +960,14 @@ int CFolderSync::SyncFolder(const PairData& pt)
                 }
                 else
                 {
-                    CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": counterpart of file %s does not exist in src folder and sync deleted not set, skipping delete file\n"), it->first.c_str());
-                    CCircularLog::Instance()(_T("INFO:    counterpart of file %s does not exist in src folder and sync deleted not set, skipping delete file"), it->first.c_str());
+                    CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": counterpart of file %s does not exist in src folder and sync deleted not set, skipping delete file\n"), cryptIt->first.c_str());
+                    CCircularLog::Instance()(_T("INFO:    counterpart of file %s does not exist in src folder and sync deleted not set, skipping delete file"), cryptIt->first.c_str());
                 }
             }
-            else if (bCopyOnly && (origFileList.empty() || (pt.m_syncDir == BothWays) || (pt.m_syncDir == DstToSrc)))
+            else if (bCopyOnly && (m_bOrigFileListEmpty || (pt.m_syncDir == BothWays) || (pt.m_syncDir == DstToSrc)))
             {
-                std::wstring cryptPath = CPathUtils::Append(pt.m_cryptPath, it->first);
-                std::wstring origPath  = CPathUtils::Append(pt.m_origPath, it->first);
+                std::wstring cryptPath = CPathUtils::Append(pt.m_cryptPath, cryptIt->first);
+                std::wstring origPath  = CPathUtils::Append(pt.m_origPath, cryptIt->first);
                 CCircularLog::Instance()(_T("INFO:    copy file %s to %s"), cryptPath.c_str(), origPath.c_str());
                 // copy the file
                 if (!CSCopyFile(cryptPath.c_str(), origPath.c_str(), pt.m_ResetOriginalArchAttr, pt.m_syncDir, Encrypt))
@@ -907,28 +979,26 @@ int CFolderSync::SyncFolder(const PairData& pt)
                       * if syncing is both ways or encrypted to original direction.
                       * Otherwise assume the intention is file should not be restored
                       **/
-                     || (origFileList.empty() && (pt.m_syncDir == BothWays || pt.m_syncDir == DstToSrc)))
+                     || (m_bOrigFileListEmpty && (pt.m_syncDir == BothWays || pt.m_syncDir == DstToSrc)))
             {
                 // decrypt the file
-                CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": decrypt file %s to %s\n"), it->first.c_str(), pt.m_origPath.c_str());
-#ifdef _DEBUG
+                CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": decrypt file %s to %s\n"), cryptIt->first.c_str(), pt.m_origPath.c_str());
                 // fileRelPath can / should be removed, it is only
                 // used in two locations and exploratory code has
                 // been put in place to test it is ok to remove it.
                 // Memory usage will be reduce between 40 to 50%
                 std::wstring FileToDelete;
-                if (it->second.filenameEncrypted)
-                    FileToDelete  = GetEncryptedFilename(it->first, pt.m_password, pt.m_encNames, pt.m_encNamesNew, pt.m_use7Z, pt.m_useGpg);
+                if (cryptIt->second.filenameEncrypted)
+                    FileToDelete  = GetEncryptedFilename(cryptIt->first, pt.m_password, pt.m_encNames, pt.m_encNamesNew, pt.m_use7Z, pt.m_useGpg);
                 else 
-                    FileToDelete = it->first;
-                assert(_wcsicmp(FileToDelete.c_str(), it->second.fileRelPath.c_str()) == 0);
-#endif
+                    FileToDelete = cryptIt->first;
+                //assert(_wcsicmp(FileToDelete.c_str(), cryptIt->second.fileRelPath.c_str()) == 0);
                 std::wstring cryptPath = CPathUtils::Append(pt.m_cryptPath, FileToDelete);
-                std::wstring origPath  = CPathUtils::Append(pt.m_origPath, it->first);
-                if (!DecryptFile(origPath, cryptPath, pt.m_password, it->second, pt.m_useGpg, pt.m_syncDir))
+                std::wstring origPath  = CPathUtils::Append(pt.m_origPath, cryptIt->first);
+                if (!DecryptFile(origPath, cryptPath, pt.m_password, cryptIt->second, pt.m_useGpg, pt.m_syncDir))
                 {
                     retVal |= ErrorCrypt;
-                    if (!it->second.filenameEncrypted)
+                    if (!cryptIt->second.filenameEncrypted)
                     {
                         // File in the encrypted directory was probably not
                         // created by cryptsync, it does not have a filename matching
@@ -961,10 +1031,6 @@ int CFolderSync::SyncFolder(const PairData& pt)
             }
         }
     }
-    if (m_trayWnd)
-        PostMessage(m_trayWnd, WM_PROGRESS, 0, 0);
-    CCircularLog::Instance()(L"INFO:    finished syncing folder orig \"%s\" with crypt \"%s\"", pt.m_origPath.c_str(), pt.m_cryptPath.c_str());
-    CCircularLog::Instance().Save();
     return retVal;
 }
 
@@ -1013,7 +1079,7 @@ std::map<std::wstring, FileData> CFolderSync::GetFileList(bool orig, const std::
         // used in two locations and exploratory code has 
         // been put in place to test it is ok to remove it.
         // Memory usage will be reduce between 40 to 50%
-        fd.fileRelPath                = relPath;
+        //fd.fileRelPath                = relPath;
 
         std::wstring decryptedRelPath = relPath;
         if (!orig)
