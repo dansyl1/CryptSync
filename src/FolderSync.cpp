@@ -383,7 +383,7 @@ void CFolderSync::SyncFile(const std::wstring& plainPath, const PairData& pt)
             CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": file %s does not exist, delete file %s\n"), orig.c_str(), crypt.c_str());
             CCircularLog::Instance()(_T("INFO:    file %s does not exist, delete file %s"), orig.c_str(), crypt.c_str());
 
-            // No need to care about m_notifyIgnores, we'll get one about the deleting of the 
+            // No need to care about m_notifyIgnores, we'll get one about the deletion of the 
             // encrypted file we're about to do, and original file is already gone.
             if (!DeletePathToTrash(crypt))
             {
@@ -436,7 +436,7 @@ void CFolderSync::SyncFile(const std::wstring& plainPath, const PairData& pt)
                 CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": file %s does not exist, delete file %s\n"), crypt.c_str(), orig.c_str());
                 CCircularLog::Instance()(_T("INFO:    file %s does not exist, delete file %s"), crypt.c_str(), orig.c_str());
 
-                // No need to care about m_notifyIgnores, we'll get one about the deleting of the
+                // No need to care about m_notifyIgnores, we'll get one about the deletion of the
                 // original file we're about to do, and ecnrypted file is already gone.
                 if (!DeletePathToTrash(orig))
                 {
@@ -1182,22 +1182,14 @@ bool CFolderSync::EncryptFile(const std::wstring& orig, const std::wstring& cryp
         };
 
         // Try to create temporary archive in same path so "MoveFileEx" works faster
-        std::wstring encryptTmpFile = (targetFolder + L"\\~$" + cryptName + L".tmp");
-        C7Zip        compressor;
+        std::wstring encryptTmpFile = CPathUtils::GetTempFilePath();
+        C7Zip compressor;
         compressor.SetPassword(password);
         compressor.SetArchivePath(encryptTmpFile);
         compressor.SetCompressionFormat(CompressionFormat::SevenZip, compression);
         compressor.SetCallback(progressFunc);
 
-        if ((bRet = compressor.AddPath(orig)) == false)
-        {
-            // Assume issue is with filename, retry using temp directory.
-            DeleteFile(encryptTmpFile.c_str());
-            encryptTmpFile = CPathUtils::GetTempFilePath();
-            compressor.SetArchivePath(encryptTmpFile);
-            bRet = compressor.AddPath(orig);
-        }
-        if (bRet)
+        if ((bRet = compressor.AddPath(orig)))
         {
             CPathUtils::CreateRecursiveDirectory(targetFolder);
             
