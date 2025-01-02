@@ -344,7 +344,7 @@ void CFolderSync::SyncFile(const std::wstring& plainPath, const PairData& pt)
             CTraceToOutputDebugString::Instance()(_T(__FUNCTION__) _T(": file %s does not exist, delete file %s\n"), orig.c_str(), crypt.c_str());
             CCircularLog::Instance()(_T("INFO:    file %s does not exist, delete file %s"), orig.c_str(), crypt.c_str());
 
-            if (!DeletePathToTrash(crypt))
+            if (!DeletePathToTrash(crypt) || bCryptMissing)
             {
                 // in case the notification was for a folder that got removed,
                 // the GetDecryptedFilename() call above added the .cryptsync extension which
@@ -1654,7 +1654,7 @@ bool CFolderSync::DeletePathToTrash(const std::wstring& path)
     auto              hr  = pfo.CreateInstance(CLSID_FileOperation, nullptr, CLSCTX_ALL);
     if (SUCCEEDED(hr))
     {
-        DWORD flags = FOF_ALLOWUNDO | FOF_FILESONLY | FOF_NOCONFIRMATION | FOF_NO_CONNECTED_ELEMENTS | FOF_NOERRORUI | FOF_SILENT | FOF_NORECURSION | FOFX_RECYCLEONDELETE;
+        DWORD flags = FOF_ALLOWUNDO | FOF_FILESONLY | FOF_NOCONFIRMATION | FOF_NO_CONNECTED_ELEMENTS | FOF_NOERRORUI | FOF_SILENT | FOFX_RECYCLEONDELETE;
         pfo->SetOperationFlags(flags);
         IShellItemPtr psiFrom = nullptr;
         hr                    = SHCreateItemFromParsingName(path.c_str(), nullptr, IID_PPV_ARGS(&psiFrom));
@@ -1677,7 +1677,7 @@ bool CFolderSync::DeletePathToTrash(const std::wstring& path)
         }
     }
     // try the SHFileOperation
-    FILEOP_FLAGS   flags = FOF_ALLOWUNDO | FOF_FILESONLY | FOF_NOCONFIRMATION | FOF_NO_CONNECTED_ELEMENTS | FOF_NOERRORUI | FOF_SILENT | FOF_NORECURSION;
+    FILEOP_FLAGS   flags = FOF_ALLOWUNDO | FOF_FILESONLY | FOF_NOCONFIRMATION | FOF_NO_CONNECTED_ELEMENTS | FOF_NOERRORUI | FOF_SILENT;
     SHFILEOPSTRUCT fop   = {nullptr};
     fop.wFunc            = FO_DELETE;
     fop.fFlags           = flags;
@@ -1686,7 +1686,27 @@ bool CFolderSync::DeletePathToTrash(const std::wstring& path)
     delBuf[path.size()]     = 0;
     delBuf[path.size() + 1] = 0;
     fop.pFrom               = delBuf.get();
-    return ((SHFileOperation(&fop) == 0) && (fop.fAnyOperationsAborted == FALSE));
+    auto ret = ((SHFileOperation(&fop) == 0) && (fop.fAnyOperationsAborted == FALSE));
+    if (!ret)
+    {
+        // delete the file directly
+        ret = DeleteFile(path.c_str());
+        if (!ret)
+        {
+            // in case the path is a directory, delete all files and subdirectories
+            CDirFileEnum enumerator(path);
+            std::wstring filePath;
+            bool         isDir = false;
+            while (enumerator.NextFile(filePath, &isDir, true))
+            {
+                if (isDir)
+                    RemoveDirectory(filePath.c_str());
+                else
+                    DeleteFile(filePath.c_str());
+            }
+        }
+    }
+    return PathFileExists(path.c_str()) == FALSE;
 }
 
 std::map<std::wstring, SyncOp> CFolderSync::GetFailures()
