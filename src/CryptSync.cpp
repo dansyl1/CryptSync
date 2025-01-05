@@ -17,6 +17,7 @@
 // 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 //
 
+#include <clocale>
 #include "stdafx.h"
 #include "CmdLineParser.h"
 #include "TrayWindow.h"
@@ -24,6 +25,7 @@
 #include "PathUtils.h"
 #include "CircularLog.h"
 #include "resource.h"
+#include <assert.h>
 
 constexpr auto MAX_LOADSTRING = 100;
 
@@ -153,6 +155,10 @@ int APIENTRY _tWinMain(HINSTANCE hInstance,
 
     CCircularLog::Instance().Init(lp, maxlog);
     CCircularLog::Instance()(L"INFO:    Starting CryptSync");
+
+    auto old_locale = std::setlocale(LC_CTYPE, "");
+    if (old_locale == NULL)  // avoir "warning C4189" when compiling for Release
+        assert(0);
 
     if (parser.HasVal(L"src") && parser.HasVal(L"dst"))
     {
